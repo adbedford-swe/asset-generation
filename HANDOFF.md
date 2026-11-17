@@ -1,201 +1,84 @@
-# HANDOFF — Idol → Rigged & Animated Asset Pipeline
+# HANDOFF: Idol → rigged & animated asset pipeline
 
-> Read this top-to-bottom before doing anything. It captures the goal, the
-> research, what is already built and validated, what is next, and every
-> environment gotcha that cost time to discover.
+Read this, then [README.md](README.md). The README says how to run the pipeline and why it is built this way;
+this file says what state it is in, what has been checked on which machine, and what to watch.
 
-## 1. The overarching task
+## Goal
 
-Turn `speridlabs/idol`'s raw 3D Gaussian Splat (`.ply`) output into an
-**animated, engine-ready `.glb`** in a fully automated Python/CLI pipeline.
-Four stages (from the original LLM plan, adapted to this ROCm machine):
+Turn one image into an animated, engine-ready `.glb` with no human in the loop: Idol splat → textured mesh
+→ auto-rig for any anatomy (the reference asset is a demon/viking with horns, a tail and an axe, so no
+humanoid templates) → text-prompted motion → one file holding the mesh, rig and every clip.
 
-1. **Stage 1 — `.ply` → textured watertight `.glb`** (mesh extraction + UV + texture).
-2. **Stage 2 — topology-agnostic auto-rigging & skinning** (skeleton + LBS weights).
-3. **Stage 3 — text-conditioned any-skeleton motion generation**.
-4. **Orchestration glue** — one orchestrator passing file paths
-   (`asset.ply → mesh.glb → rigged.glb → animated.glb`), plus a headless-Blender
-   finalizer (prune floating islands, normalize scale/origin, bake rotations onto
-   the armature, export a single self-contained `.glb`).
+## State
 
-The user's reference asset is a demon/viking with an axe, horns, and a tail —
-i.e. **non-standard anatomy**, which is exactly why template humanoids (Mixamo)
-are out and we need arbitrary-skeleton rigging + motion.
+Implemented end to end in the `assetgen` package with one CLI (`assetgen run|batch|setup|doctor|synth`).
+It replaces the earlier `pipeline/` scripts entirely; those had these defects:
 
-## 2. This machine (critical facts)
+- The renderer read `rot_0..3` as (x, y, z, w). Idol and the INRIA layout store (w, x, y, z), so every
+  Gaussian was oriented wrongly.
+- Its depth sort key, `tile_id * 1e6 + depth`, was promoted to float32, so past the first rows of tiles the
+  depth part fell below float precision and splats composited in list order.
+- Idol's PLY is Y-down (its z-up object turned +90° about X), not Y-up as the previous handoff said, and its
+  yaw is arbitrary. Nothing stood the asset up or turned it to face a known direction, which SkinTokens and
+  UniMate's facing both depend on.
+- Fusion used expected depth (which smears edges) with no silhouette carving. The texture bake had no
+  occlusion test and looped over triangles in Python. There was no decimation before xatlas.
 
-- **GPU**: 2× AMD Radeon RX 7900 XTX (RDNA3, **gfx1100**, 24 GB each) + 1 iGPU.
-  Driven through ROCm as `cuda` / `cuda:0` / `cuda:1`. torch is
-  **2.12.0+rocm7.2** (system python3.14). `torch.cuda.is_available()` → True.
-- **Python**: only **3.14** is installed system-wide. `uv` is at
-  `/home/alex/.local/bin/uv` (use it to make venvs with other Python versions —
-  several downstream tools need 3.10–3.13).
-- **idol**: installed in `~/.local/lib/python3.14/site-packages/idol` (NOT
-  editable). Source repo is at `idol-sdk/` in this workspace. Weights are cached
-  in `~/.cache/huggingface/hub` (idol, dinov3-vith16plus, FLUX.2-dev all present).
-- **Blender 5.3.0**: `/home/alex/Documents/Blender/blender-5.3.0-linux-x64/blender`.
-  Headless works (`blender -b -P script.py`). **Native 3DGS `.ply` import + render
-  works, but exporting a mesh FROM a splat is NOT supported** (user-confirmed) —
-  so Blender is only a possible *renderer*, never the mesh extractor.
-- **llama.cpp** (`llama-server`) runs on the iGPU and is the local LLM. For any
-  GPU-heavy command, pass `suspend_llama_cpp: true` to `execute_command` so it
-  stops/restarts the server and frees VRAM.
-- **Disk**: root `/` was **100% full** — I purged the pip cache (freed ~21 GB).
-  The Storage drive (`/run/media/alex/Storage`, where this workspace lives) has
-  ~73 GB free. **Watch disk space**; big model downloads go here or to `~/.cache`.
-- **PEP 668**: system python is externally managed. Install with
-  `pip install --user --break-system-packages <pkg>` (lands in `~/.local`, same as idol).
-- **Browser tool is broken** on this box (Chromium sandbox mount-namespace error).
-  Do web research with `curl` against raw.githubusercontent.com / api.github.com,
-  or the `web_search` tool.
+## Verified, and where
 
-### torch 2.12 gotchas (already hit)
-- `F.normalize(x)` with `dim=None` **crashes on 1-D inputs** ("Dimension out of
-  range"). Always pass `dim=-1`.
-- `torch.cross(a, b)` without `dim` prints a deprecation warning (harmless).
-- `torch.bmm` needs both operands 3-D; use `torch.einsum` for `(3,3) @ (N,3,3)`.
+Everything below ran on the development laptop: **Windows 11, an NVIDIA RTX 500 Ada (4 GB) on CUDA
+(torch 2.14.1+cu130), bpy 4.5.16**. **Nothing has run on the ROCm machine yet.** The code has no
+CUDA-only parts (no compiled extensions; flash-attn replaced by SDPA), and `uv.lock` resolves Linux to
+`torch 2.14.1+rocm7.2` and `triton-rocm 3.8.0`. But resolving is not installing, and installing is not
+running.
 
-## 3. Research findings (all verified REAL, not hallucinated)
+- `uv run pytest`: 20 tests pass (rasterizer vs a brute-force reference, conventions, sphere
+  reconstruction, glTF round trips, orientation, rig utilities, skinning, clip merge).
+- Stage 1 on Idol's own example splat (`default-obj-backpack.ply` from the Idol HF Space): 64 views at
+  768 px, 256³ fusion, 40k faces, 2048² texture in about 90 s on the 4 GB GPU. Colour PSNR against the splat
+  is about 25 dB from held-out views.
+- Orientation on Idol-like splats made from Khronos' Fox and CesiumMan (`assetgen synth`), written Y-down at
+  yaws 20°/137°/250° with input views from −40° to +30°: up flip right every time, facing within 0.2°.
+- The whole chain on the Fox (quadruped): mesh → SkinTokens (29 joints: spine, neck, head, ears, four legs,
+  tail) → UniMate (facing pair = what UniMate's own rules label Right/Left Thigh) → walk and jump clips →
+  merged `fox.glb` with named clips, checked by evaluating the skinning per frame (`assetgen.gltf_anim`).
+- An end-to-end `assetgen run` on CesiumMan (humanoid) through the orchestrator; see the PR for its result.
 
-| Stage | Primary choice | Repo / source | ROCm status on THIS box |
-|---|---|---|---|
-| 1 render | **pure-PyTorch splat rasterizer** (custom) | — (we wrote it) | ✅ works (validated) |
-| 1 render (alt) | gsplat | nerfstudio-project/gsplat | ❌ CUDA-only; the HIP port (AMD-Ecosystem/gsplat-amd) targets **Instinct** (gfx942), consumer Radeon = build friction. Dropped. |
-| 1 mesh | **Open3D ScalableTSDFVolume** (CPU) | open3d 0.20.0 | ✅ installed |
-| 1 UV | **xatlas** | xatlas 0.0.11 | ✅ installed |
-| 1 export | **trimesh** | trimesh 5.2.1 | ✅ installed |
-| 2 rig | **SkinTokens / TokenRig** (VAST-AI, successor to UniRig) | VAST-AI-Research/SkinTokens | ⚠️ needs flash-attn (patch to SDPA) + bpy module (bpy 5.3.0 has a **cp313** wheel → use Python 3.13 via uv). 14 GB VRAM OK. |
-| 2 rig (alt) | MagicArticulate (CVPR 2025) | Seed3D/MagicArticulate | ⚠️ also needs flash-attn; released code is skeleton-gen focused. |
-| 2 rig (alt) | UniRig (SIGGRAPH '25) | VAST-AI-Research/UniRig | ❌ needs spconv (CUDA) — bad on ROCm. |
-| 3 motion | **UniMate** (SIGGRAPH Asia 2026) | Friedrich-M/UniMate | ⚠️ swap the `torch==2.5.1+cu124` pin for the ROCm build; torch-geometric / torchdiffeq / Motion / CLIP / T5 are pure-Python or have CPU paths. 74 M params, small. |
-| 3 motion (alt) | SAMoR (NeurIPS 2026) | arXiv 2607.02148 | research paper, less clear CLI. |
+Not verified anywhere: the `generate` stage (Idol's gated encoders aren't on the laptop; it calls the same
+Idol API the earlier `gen_idol.py` validated on the ROCm box), `batch` across two GPUs, and
+`--llm-base-url` labelling.
 
-### Key API facts learned
-- **idol**: `IdolPipeline.from_pretrained("speridlabs/idol", image_encoders={...}, device=...)`
-  then `pipeline(image, mode=, seed=, num_gaussians=, steps=)`. `device` goes to
-  `from_pretrained`, **not** `__call__`. Passing **local folder paths** to
-  `image_encoders` bypasses the HF gated-access check (only repo *ids* are gated).
-  Output `.ply` is standard 3DGS: `x,y,z, nx,ny,nz, f_dc_0..2, opacity,
-  scale_0..2, rot_0..3` where **rot_0..3 = (x,y,z,w)** (INRIA convention).
-- **SkinTokens**: `python demo.py --input mesh.glb --output rigged.glb [--use_transfer]`.
-  flash-attn is imported in `tokenrig.py` + `skin_vae_model.py` with a fallback that
-  STILL needs the `flash_attn` package — **patch those two to SDPA** for ROCm.
-  `attention_processor.py`, `miche_transformer_blocks.py`, and
-  `michelangelo/.../transformer_blocks.py` already fall back to SDPA. Uses a
-  `bpy_server.py` subprocess (needs the `bpy` pip module) for mesh transfer/export.
-- **UniMate**: `python -m unimate.inference.sample --exp_dir
-  outputs/unimate_uniml3d_f60_v3 --asset <asset_dir> --prompt "An object ..."
-  --output_dir ...`. Checkpoints: `hf download Linzhan/UniMate --include
-  "unimate_uniml3d_f60_v3/*"`. Custom rigged assets go through
-  `data_process/rig_preprocess/` which **labels joints with an LLM and pauses for a
-  human review** of labels + facing — this is the main HITL step to automate or
-  script around. Prompts must start with "An object" and describe one motion.
-  Supports motion **expansion** (`--expand_overlap`, chain prompts),
-  **in-betweening** (`--keep_frames`), and **editing** (`--keep_joints`).
-  `bash scripts/run_animate_motion.sh <dir>` drives each asset's mesh → animated GLB+FBX.
+## First thing to do on the ROCm box
 
-## 4. What is already BUILT and VALIDATED
-
-All under `pipeline/` in this workspace.
-
-- **`pipeline/gen_idol.py`** — generates a `.ply` from an image using idol with
-  local-cache encoders (bypasses gated check). **Validated**: produced
-  `outputs/idol/fig-viking.ply` (262,144 Gaussians, Y-up, centered at origin,
-  ~1 unit tall). Usage:
-  `python3 pipeline/gen_idol.py --image <img> --mode synthetic --out outputs/idol --device cuda:0`
-  (run with `suspend_llama_cpp: true`).
-- **`pipeline/splat_render.py`** — **pure-PyTorch 3DGS forward renderer** (the
-  core Stage-1 renderer; no C++/HIP, no gsplat, no Blender). Loads the `.ply`,
-  builds 3D covariances from scale+quat, projects to 2D covariances via the
-  projection Jacobian, PSD-clamps with `torch.linalg.eigh`, computes the conic +
-  3σ radius, does vectorized tile assignment, and front-to-back alpha-composites
-  per 16×16 tile. Emits **RGB + expected-depth + coverage + `poses.json`** (view
-  matrices are world→camera, camera looks down +Z, X right, Y down).
-  **Validated on CPU AND ROCm GPU — pixel-identical output**, a clean viking
-  (horned helmet, shield, axe, green tunic, fur, leather belt). ~0.57 s/view on GPU.
-  Key functions: `load_gaussians`, `orbit_cameras`, `render_view`, `render_views`.
-- **`pipeline/mesh_extract.py`** — full Stage 1: render N orbit views →
-  **Open3D ScalableTSDFVolume** fusion (marching cubes, cleans non-manifold /
-  duplicated / degenerate, orients normals) → **xatlas** UV unwrap →
-  **vectorized multi-view visibility-weighted texture bake** (the only Python loop
-  is over triangles; barycentric rasterization, projection into all views, RGB
-  gather, and visibility are batched numpy) → **trimesh `.glb`** export with the
-  baked albedo. **Written but NOT yet run end-to-end** — that is the immediate next step.
-  Usage:
-  `python3 pipeline/mesh_extract.py --ply outputs/idol/fig-viking.ply --out outputs/mesh --n_views 32 --image_size 512 --tex_size 1024 --device cuda:0`
-- **`pipeline/test_render.py`** — renderer smoke test (renders a few views).
-
-## 5. IMMEDIATE NEXT STEP (do this first)
-
-Run Stage 1 end-to-end and **inspect the result**:
+```bash
+bash scripts/setup_rocm.sh          # env, checkouts, weights, then doctor
+uv run assetgen run --image <idol-sdk>/demo/examples/fig-viking.webp --out outputs/viking --height 1.9
 ```
-python3 pipeline/mesh_extract.py --ply outputs/idol/fig-viking.ply \
-    --out outputs/mesh --n_views 32 --image_size 512 --tex_size 1024 --device cuda:0
-```
-(run with `suspend_llama_cpp: true`). Then verify `outputs/mesh/mesh.glb`:
-- Load it (trimesh, or open in Blender headless and render a turntable) and LOOK at
-  it. Check: is the mesh watertight and the right shape? Are the UVs sane? Does the
-  baked texture match the viking's colors?
-- Likely issues to watch: TSDF voxel size vs object scale (object is ~1 m; defaults
-  are `voxel_size=0.005`, `sdf_trunc=0.02` — tune if the mesh is too coarse/noisy);
-  texture-bake speed at `tex_size=1024` (drop to 512 to iterate faster); thin
-  geometry (axe handle, horns) may need more views or a finer voxel.
-- If the texture bake is too slow or ugly, a robust fallback is **vertex colors**
-  (assign each vertex the color from the best-seeing view) exported without a UV
-  texture — still a valid "textured mesh" for the rigger.
 
-## 6. Then: Stage 2 (rigging) and Stage 3 (motion) — NOT started
+Check `outputs/viking/1_mesh/front.png` (the asset should face you, upright), `1_mesh/compare.png`,
+`2_rig/preview.png`, then the final `viking.glb` in a viewer. Things to watch:
 
-**Stage 2 (SkinTokens)** plan:
-1. `uv venv --python 3.13` (bpy 5.3.0 has a cp313 wheel). Install SkinTokens
-   deps + the ROCm torch build + `bpy==5.3.0` (from download.blender.org/pypi).
-2. Patch `src/model/tokenrig.py` and `src/model/skin_vae_model.py` flash-attn
-   fallbacks to SDPA (mirror the existing SDPA fallback in `attention_processor.py`).
-3. `python download.py --model` to fetch TokenRig + FSQ-CVAE checkpoints.
-4. `python demo.py --input outputs/mesh/mesh.glb --output outputs/rig/rigged.glb --use_transfer`.
-   Verify the skeleton + skin weights look right (open in Blender).
-- Fallback if SkinTokens is too much friction on ROCm: **MagicArticulate**.
+- `doctor` reporting no fused attention: SDPA then falls back to the math kernel, which is much slower.
+- The iGPU appearing as a torch device: pin the 7900 XTXs with `HIP_VISIBLE_DEVICES=0,1` if so.
+- Disk: `setup_rocm.sh` keeps the uv cache next to the repo so the 6.2 GB torch wheel is hard-linked into
+  `.venv`. The env is roughly 15–20 GB, plus about 4 GB of weights in `third_party/` and the HF cache.
+- llama.cpp: the earlier session freed VRAM with `suspend_llama_cpp` for GPU commands. The pipeline needs at
+  most about 14 GB on one card (SkinTokens at 10 beams), so on a 24 GB card that should not be needed.
 
-**Stage 3 (UniMate)** plan:
-1. `uv venv --python 3.10` (UniMate pins bpy==4.0.0 cp310; but export/animate can
-   run via `blender -b -P` instead of the bpy module, so a newer python may work —
-   test it). Install requirements with the ROCm torch swap.
-2. `hf download Linzhan/UniMate --include "unimate_uniml3d_f60_v3/*"`.
-3. Run `data_process/rig_preprocess/` on `outputs/rig/rigged.glb` to build an asset
-   dir (this is the LLM-joint-labeling + review step — script the review or auto-approve).
-4. `python -m unimate.inference.sample --exp_dir ... --asset <asset_dir> --prompt
-   "An object swings a heavy weapon overhead." --output_dir ...` then
-   `bash scripts/run_animate_motion.sh <dir>` to drive the mesh → animated GLB.
+## Machine facts carried over
 
-**Orchestration**: write a top-level `pipeline/run.py` (or shell script) that chains
-gen_idol → mesh_extract → rig → animate, passing file paths, with each stage
-skippable/resumable. Add the headless-Blender finalizer at the end.
+- 2× RX 7900 XTX (gfx1100, 24 GB) + iGPU; ROCm drives them as `cuda:0` / `cuda:1`.
+- System Python is 3.14 and externally managed. The pipeline uses its own uv-managed 3.11 venv (bpy 4.5
+  only ships cp311 wheels and pins numpy < 2), so system packages are untouched.
+- Idol weights and its gated encoders are cached in `~/.cache/huggingface/hub`. `assetgen.generate` resolves
+  the encoders to those local snapshots so no token is needed.
+- Blender 5.3 is installed, but the pipeline does not use it (bpy 4.5 is in the venv). Blender 5 removed
+  the legacy action API that UniMate's code relies on.
 
-## 7. Working style notes (for the next session)
+## Possible improvements
 
-- The user is **sensitive to overconfident assertions from partial evidence**
-  (e.g. grepping one file and declaring a feature absent). Verify thoroughly —
-  read the repo, the docs, the build system — before asserting. When unsure, say so.
-- The user actively co-designs and will propose optimizations (e.g. the pure-PyTorch
-  renderer). Engage with the design, don't just execute.
-- Prefer doing the work over more research ping-pong once a decision is made.
-- Use `suspend_llama_cpp: true` for GPU commands. Watch disk space. Use
-  `pip install --user --break-system-packages`.
-
-## 8. File map (this workspace)
-
-```
-asset-generation/
-├── HANDOFF.md                  ← this file
-├── idol-sdk/                   ← idol source (installed separately in ~/.local)
-│   └── demo/examples/          ← input images (fig-viking.webp, fig-knight.webp, ...)
-├── pipeline/
-│   ├── gen_idol.py             ← image → .ply  (VALIDATED)
-│   ├── splat_render.py         ← pure-PyTorch 3DGS renderer  (VALIDATED)
-│   ├── mesh_extract.py         ← Stage 1: .ply → textured .glb  (written, not yet run)
-│   └── test_render.py          ← renderer smoke test
-└── outputs/
-    ├── idol/fig-viking.ply     ← generated test asset (262,144 Gaussians)
-    ├── idol/fig-viking_input.png
-    └── render_test/            ← renderer test outputs (v000.png, *_depth.png, poses.json)
-```
+- Score several SkinTokens samples (`--seed`) and keep the best: joints inside the mesh, symmetry, joint
+  count.
+- Loopable idle/walk clips: UniMate's in-betweening (`--keep_frames 0,-1`) can pin the last frame to the
+  first.
+- Longer clips with UniMate's motion expansion (chained prompts).

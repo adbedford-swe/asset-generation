@@ -1,7 +1,7 @@
-# Generated assets (large binaries, re-runnable via pipeline/)
+# Generated assets
 outputs/
 
-# idol-sdk is a clone of github.com/adbedford-swe/idol-sdk — keep it out of this repo
+# idol is installed from github.com/adbedford-swe/idol-sdk; a local clone stays out of this repo
 idol-sdk/
 
 # relectric workspace internals
@@ -17,3 +17,5 @@ venv/
 *.egg-info/
 dist/
 build/
+third_party/
+.uv-cache/
