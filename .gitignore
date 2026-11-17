@@ -1,0 +1,19 @@
+# Generated assets (large binaries, re-runnable via pipeline/)
+outputs/
+
+# idol-sdk is a clone of github.com/adbedford-swe/idol-sdk — keep it out of this repo
+idol-sdk/
+
+# relectric workspace internals
+.rws/
+.tools/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
