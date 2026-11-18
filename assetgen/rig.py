@@ -20,6 +20,7 @@ import os
 import random
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -143,7 +144,9 @@ def predict(mesh_path, device: str = "cuda", cls: str = "articulation", seed: in
                                     repetition_penalty=repetition_penalty, num_return_sequences=1,
                                     num_beams=num_beams, do_sample=True)
     log(f"[rig] generating on {device} (beams={num_beams}, class={cls})")
-    with torch.no_grad():
+    # SkinTokens mixes float32 inputs with bfloat16 weights under CUDA autocast; on CPU use CPU autocast.
+    autocast = torch.autocast("cpu", dtype=torch.bfloat16) if torch.device(device).type == "cpu" else nullcontext()
+    with torch.no_grad(), autocast:
         result = model.predict_step(batch, make_asset=True)["results"][0]
     asset = result.asset
     if postprocess:
