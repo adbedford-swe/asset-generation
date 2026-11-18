@@ -47,6 +47,10 @@ class Options:
     llm_base_url: str | None = None
     llm_model: str = "local"
     cfg_scale: float | None = None
+    loop: str = "auto"
+    root_motion: bool = False
+    flow_steps: int | None = None
+    fbx: bool = False
 
 
 def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
@@ -75,12 +79,19 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
         anim += ["--prompt", *o.prompts]
     if o.cfg_scale is not None:
         anim += ["--cfg_scale", o.cfg_scale]
+    anim += ["--loop", o.loop]
+    if o.flow_steps is not None:
+        anim += ["--flow_steps", o.flow_steps]
+    if o.fbx:
+        anim.append("--fbx")
     if o.llm_base_url:
         anim += ["--llm_base_url", o.llm_base_url, "--llm_model", o.llm_model]
     cmds["animate"] = (anim, [out / "3_motion" / "clips.json"])
     fin = ["assetgen.finalize", "--clips", out / "3_motion" / "clips.json", "--out", out / f"{o.name}.glb"]
     if o.height is not None:
         fin += ["--height", o.height]
+    if o.root_motion:
+        fin.append("--root_motion")
     cmds["finalize"] = (fin, [out / f"{o.name}.glb"])
     return {k: ([str(a) for a in v[0]], v[1]) for k, v in cmds.items()}
 
@@ -187,6 +198,10 @@ def branch(source: Path, start: str, target: Path) -> Path:
     for d in ["input", *[STAGE_DIRS[s] for s in needed]]:
         if (source / d).exists():
             shutil.copytree(source / d, target / d)
+    # Starting from the motion stage, the rig is unchanged: keep its UniMate preparation, which the
+    # motion stage reuses when the rig and its settings match.
+    if start == "animate" and (source / "3_motion" / "asset").exists():
+        shutil.copytree(source / "3_motion" / "asset", target / "3_motion" / "asset")
     stages = json.loads((source / "manifest.json").read_text())["stages"]
     (target / "manifest.json").write_text(json.dumps({"stages": {s: stages[s] for s in needed}}, indent=2))
     return target

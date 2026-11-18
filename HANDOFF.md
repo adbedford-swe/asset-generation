@@ -67,6 +67,19 @@ Not verified anywhere: the `generate` stage against real Idol (Idol's gated enco
 calls are checked against Idol's API and tested with a stub), two real GPUs at once, any AMD GPU kernel, and
 `--llm-base-url` labelling.
 
+## Loops and motion speed
+
+Clips loop seamlessly by default (prompts ending in `[once]` do not); see "Loops" in the README for the method.
+The sampler (`assetgen.motion_sampler`) replaces UniMate's sampling through `assetgen.unimate_compat`, which
+patches `unimate.inference.generate.generate_samples` before `sample.py` imports it; in-betweening, editing and
+expansion still go to UniMate's own code. Measured on the laptop (Fox): looped clips close to within 1e-7 of the
+asset size with seam roughness 0.1-0.8x the rest of the clip; a one-shot clip misses by 0.11 of its size.
+Loops play in place unless `--root-motion`; each clip's glTF `extras` carry `loop`, `loop_frames`,
+`root_motion` and `root_velocity` (m/s). Continuing a run from Motion reuses its UniMate rig preparation and the
+motion stage drives every clip in one Blender session (GLB only unless `--fbx`): a two-clip continuation took
+about 130-165 s on the laptop against about 265 s before. Still open: the 60-frame window caps a loop at 48 frames
+(1.6 s); longer cycles would need UniMate's motion expansion with the same tie across segments.
+
 ## First thing to do on the ROCm box
 
 ```bash

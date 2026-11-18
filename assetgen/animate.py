@@ -30,7 +30,7 @@ DEFAULT_PROMPTS = [
     "An object stands idle and breathes.",
     "An object walks forward.",
     "An object runs forward.",
-    "An object attacks forward.",
+    "An object attacks forward. [once]",
 ]
 
 
@@ -117,18 +117,34 @@ def clip_name(prompt: str) -> str:
     return "_".join(words[:4]) or "clip"
 
 
-def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", device: str = "cuda",
-        repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
-        llm: dict | None = None, log=print) -> list[dict]:
-    rigged, out_dir = rigged.resolve(), out_dir.resolve()
-    if not (unimate_exp_dir() / "config.json").exists():
-        raise SystemExit(f"UniMate is not set up at {unimate_dir()}: run `uv run assetgen setup`")
-    env = _env(device)
-    asset_dir = out_dir / "asset"
+ONCE = re.compile(r"\s*\[once\]\s*$", re.IGNORECASE)
+
+
+def split_prompt(prompt: str) -> tuple[str, bool]:
+    """A prompt and whether its clip loops: every clip loops unless the prompt ends in ``[once]``."""
+    text = ONCE.sub("", prompt).strip()
+    return text, text == prompt.strip()
+
+
+def _file_key(path: Path, *extra) -> str:
+    import hashlib
+
+    h = hashlib.sha1(path.read_bytes())
+    h.update(json.dumps([str(e) for e in extra]).encode())
+    return h.hexdigest()
+
+
+def preprocess(rigged: Path, asset_dir: Path, name: str, env: dict, annotate: str, llm: dict | None,
+               log=print) -> dict:
+    """UniMate's rig_preprocess, skipped when the same rig was already prepared the same way."""
     rig = json.loads(rigged.with_suffix(".json").read_text())
     right, left, body_axis = facing_pair(np.array(rig["joints"]), np.array(rig["parents"]), rig["names"])
+    key = _file_key(rigged, name, right, left, body_axis, annotate, llm)
+    stamp = asset_dir / ".assetgen_key"
+    if stamp.exists() and stamp.read_text() == key and (asset_dir / "summary.json").exists():
+        log("[animate] rig preprocessing up to date")
+        return json.loads((asset_dir / "summary.json").read_text())
     log(f"[animate] facing pair: right={right} left={left}{' (head/tail)' if body_axis else ''}")
-
     pre = ["-m", "data_process.rig_preprocess", "run", "--input", rigged, "--output_dir", asset_dir,
            "--name", name, "--no_review", "--overwrite", "--face_r", right, "--face_l", left,
            "--annotate", "llm" if llm else annotate]
@@ -147,6 +163,49 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
         raise RuntimeError(f"rig has {summary.get('n_joints')} joints, over the model's limit")
     for note in summary.get("notes", []):
         log(f"[animate] note: {note}")
+    stamp.write_text(key)
+    return summary
+
+
+def trim_loops(samples: Path, loop_prompts: set[str], log=print) -> dict[str, int]:
+    """Cut each looping motion to one period plus a closing frame equal to its first (frames 0..L)."""
+    from .motion_sampler import loop_period
+
+    manifest = json.loads((samples / "manifest.json").read_text())
+    periods = {}
+    for name, entry in manifest.get("samples", {}).items():
+        if entry.get("prompt") not in loop_prompts:
+            continue
+        path = samples / manifest.get("motions_dir", "motions") / name
+        motion = np.load(path)
+        L = loop_period(motion)
+        if L is None:
+            log(f"[animate] warning: {name} came back without a loop; kept as sampled")
+            continue
+        np.save(path, motion[:L + 1])
+        periods[name] = L
+        log(f"[animate] loop: {entry.get('prompt')!r} -> {L} frames ({L / 30:.2f} s)")
+    return periods
+
+
+def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", device: str = "cuda",
+        repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
+        llm: dict | None = None, loop: str = "auto", flow_steps: int | None = None, fbx: bool = False,
+        log=print) -> list[dict]:
+    rigged, out_dir = rigged.resolve(), out_dir.resolve()
+    if not (unimate_exp_dir() / "config.json").exists():
+        raise SystemExit(f"UniMate is not set up at {unimate_dir()}: run `uv run assetgen setup`")
+    env = _env(device)
+    asset_dir = out_dir / "asset"
+    preprocess(rigged, asset_dir, name, env, annotate, llm, log)
+
+    parsed = [split_prompt(p) for p in prompts]
+    texts = [t for t, _ in parsed]
+    loop_prompts = {t for t, loops in parsed if loops} if loop != "off" else set()
+    env["ASSETGEN_LOOP"] = json.dumps({"prompts": sorted(loop_prompts),
+                                       "frames": int(loop) if loop.isdigit() else "auto"})
+    if flow_steps is not None:
+        env["ASSETGEN_FLOW_STEPS"] = str(flow_steps)
 
     samples = out_dir / "samples"
     animated = out_dir / "animated"
@@ -155,26 +214,34 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
         if d.exists():
             shutil.rmtree(d)
     sample = ["-m", "unimate.inference.sample", "--exp_dir", unimate_exp_dir(), "--asset", asset_dir,
-              "--prompt", *prompts, "--num_repetitions", str(repetitions), "--seed", str(seed),
+              "--prompt", *texts, "--num_repetitions", str(repetitions), "--seed", str(seed),
               "--output_dir", samples, "--only_save_motion"]
     if cfg_scale is not None:
         sample += ["--cfg_scale", str(cfg_scale)]
     _run(sample, env, log)
+    periods = trim_loops(samples, loop_prompts, log)
 
-    jobs = subprocess.run([sys.executable, "-m", "data_process.mesh_animation.sample_manifest", str(samples)],
-                          cwd=unimate_dir(), env=env, check=True, capture_output=True, text=True).stdout
+    listing = subprocess.run([sys.executable, "-m", "data_process.mesh_animation.sample_manifest", str(samples)],
+                             cwd=unimate_dir(), env=env, check=True, capture_output=True, text=True).stdout
     animated.mkdir(parents=True, exist_ok=True)
-    manifest = json.loads((samples / "manifest.json").read_text())
-    captions = _captions_by_file(manifest)
-    clips = []
-    for line in filter(None, jobs.splitlines()):
+    captions = _captions_by_file(json.loads((samples / "manifest.json").read_text()))
+    jobs, clips = [], []
+    for line in filter(None, listing.splitlines()):
         anim, char, cond, dtype = line.split("\t")
         stem = Path(anim).stem
-        _run(["data_process/mesh_animation/animate_motion.py", "--dataset_type", dtype, "--anim_path", anim,
-              "--char_path", char, "--cond_path", cond, "--output_dir", animated, "--anim_mode", "fk",
-              "--extra_bones_strategy", "merge"], env, log, expect=animated / f"{stem}.fbx", blender=True)
+        jobs.append({"anim": anim, "char": char, "cond": cond, "dtype": dtype, "out_dir": str(animated)})
+        L = periods.get(Path(anim).name)
         clips.append({"glb": str(animated / f"{stem}.glb"), "motion": anim,
-                      "prompt": captions.get(Path(anim).name, stem)})
+                      "prompt": captions.get(Path(anim).name, stem), "loop": L is not None,
+                      "loop_frames": L})
+    jobs_file = out_dir / "drive_jobs.json"
+    jobs_file.write_text(json.dumps(jobs, indent=2))
+    formats = "glb,fbx" if fbx else "glb"
+    _run(["-m", "assetgen.drive_clips", "--jobs", jobs_file, "--formats", formats], env, log,
+         expect=Path(clips[-1]["glb"]) if clips else None, blender=True)
+    missing = [c["glb"] for c in clips if not Path(c["glb"]).exists()]
+    if missing:
+        raise RuntimeError(f"no animated asset for {missing}")
     (out_dir / "clips.json").write_text(json.dumps(clips, indent=2))
     return clips
 
@@ -188,17 +255,23 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--rigged", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--prompt", nargs="+", default=DEFAULT_PROMPTS)
+    ap.add_argument("--prompt", nargs="+", default=DEFAULT_PROMPTS,
+                    help='motions; each loops seamlessly unless it ends in "[once]"')
     ap.add_argument("--name", default="asset")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--repetitions", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--cfg_scale", type=float, default=None)
+    ap.add_argument("--loop", default="auto",
+                    help="auto (loop length from the motion's own cycle), off, or a loop length in frames")
+    ap.add_argument("--flow_steps", type=int, default=None, help="sampler steps (default 32; 0 = UniMate's dopri5)")
+    ap.add_argument("--fbx", action="store_true", help="also export each clip as FBX")
     ap.add_argument("--llm_base_url", default=None, help="OpenAI-compatible endpoint for joint labels")
     ap.add_argument("--llm_model", default="local")
     a = ap.parse_args(argv)
     llm = {"base_url": a.llm_base_url, "model": a.llm_model} if a.llm_base_url else None
-    run(Path(a.rigged), Path(a.out), a.prompt, a.name, a.device, a.repetitions, a.seed, a.cfg_scale, llm=llm)
+    run(Path(a.rigged), Path(a.out), a.prompt, a.name, a.device, a.repetitions, a.seed, a.cfg_scale, llm=llm,
+        loop=a.loop, flow_steps=a.flow_steps, fbx=a.fbx)
 
 
 if __name__ == "__main__":

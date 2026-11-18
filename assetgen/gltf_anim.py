@@ -122,6 +122,25 @@ class AnimatedGLB:
         return np.stack([W[j][:3, 3] for j in self.skin.joints])
 
 
+def loop_seam(g: AnimatedGLB, anim: int, fps: float = 30.0) -> dict:
+    """How seamlessly clip ``anim`` loops.
+
+    position: largest vertex distance between the first and last pose, relative to the asset size.
+    roughness: the second difference across the wrap (last distinct frame, first frame, second frame)
+    divided by the 95th percentile of the same quantity over the rest of the clip. Around 1 or below,
+    the seam is no rougher than any other frame; a clip that does not loop scores far above 1."""
+    end = g.duration(anim)
+    n = int(round(end * fps))
+    size = float(np.ptp(g.posed(None), axis=0).max()) or 1.0
+    frames = np.stack([g.posed(anim, k / fps) for k in range(n + 1)])  # frame n should equal frame 0
+    position = float(np.linalg.norm(frames[n] - frames[0], axis=1).max() / size)
+    cyc = frames[:n]  # one period, without the closing duplicate
+    second = cyc[np.r_[1:n, 0]] - 2 * cyc + cyc[np.r_[n - 1, 0:n - 1]]  # wraps around at frame 0
+    mags = np.linalg.norm(second, axis=2).max(axis=1)
+    interior = np.percentile(mags[1:], 95) or 1e-12
+    return {"position": position, "roughness": float(mags[0] / interior)}
+
+
 def contact_sheet(path, frames: int = 6, size: int = 256, yaw_deg: float = 35.0) -> np.ndarray:
     """One row per animation: ``frames`` evenly spaced poses, seen from a fixed three-quarter camera."""
     import torch
