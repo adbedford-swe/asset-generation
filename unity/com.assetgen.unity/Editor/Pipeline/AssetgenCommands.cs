@@ -72,7 +72,9 @@ namespace Assetgen.Editor
             [CliArg("wait", "Wait for the character and import it before returning")] bool wait = false,
             [CliArg("idol-steps", "Idol's sampling steps (default: Project Settings > Assetgen)")] int idolSteps = 0,
             [CliArg("motion-steps", "Motion sampler steps (default: Project Settings > Assetgen)")] int motionSteps = 0,
-            [CliArg("seed", "Seed (default: Project Settings > Assetgen)")] int seed = -1)
+            [CliArg("seed", "Seed (default: Project Settings > Assetgen)")] int seed = -1,
+            [CliArg("image-model", "Text-to-image model: an id from 'assetgen image_models', a recipe or a file (default: Project Settings > Assetgen, else automatic)")]
+            string imageModel = "")
         {
             if (string.IsNullOrWhiteSpace(prompt) && string.IsNullOrWhiteSpace(image))
             {
@@ -87,6 +89,10 @@ namespace Assetgen.Editor
                 height = height > 0f ? height : settings.defaultHeight,
                 motions = motions != null && motions.Length > 0 ? motions : settings.defaultMotions.ToArray(),
                 settings = settings.generation.ToJob(),
+                image_backend = new ImageBackendRequest
+                {
+                    model = string.IsNullOrEmpty(imageModel) ? settings.generation.imageModel : imageModel,
+                },
             };
             if (idolSteps > 0)
                 request.settings.idol_steps = idolSteps;
@@ -123,6 +129,19 @@ namespace Assetgen.Editor
                 return ExitCode.Success;
             }
             return await Finish(cmd, client, job.id);
+        }
+
+        [CliGroupCommand(Group, "The text-to-image models the server's image backend can load (for --image-model).",
+            Effect = CommandEffect.ReadOnly)]
+        internal static async Task<ExitCode> ImageModels(CommandContext cmd)
+        {
+            var models = await new AssetgenClient().ImageModelsAsync(cmd.CancellationToken);
+            if (!string.IsNullOrEmpty(models.error))
+                cmd.Log.Warning(models.error);
+            foreach (var o in models.options ?? Array.Empty<ImageModelOption>())
+                cmd.Result.WriteRecord(new { o.id, o.label, automatic = o.id == models.automatic,
+                                             selected = o.id == AssetgenSettings.instance.generation.imageModel });
+            return ExitCode.Success;
         }
 
         [CliGroupCommand(Group, "Wait for a job to finish, import its character and return the prefab.",

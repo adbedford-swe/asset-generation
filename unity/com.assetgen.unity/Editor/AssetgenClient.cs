@@ -24,6 +24,10 @@ namespace Assetgen.Editor
 
         public Task<ServerInfo> InfoAsync(CancellationToken ct = default) => GetJsonAsync<ServerInfo>("info", ct, 5);
 
+        /// <summary>The text-to-image models the server's image backend can load, and the one it would pick.</summary>
+        public Task<ImageModels> ImageModelsAsync(CancellationToken ct = default) =>
+            GetJsonAsync<ImageModels>("image-models", ct, 30);
+
         public Task<JobInfo> SubmitAsync(JobRequest request, CancellationToken ct = default) =>
             SendJsonAsync<JobInfo>(HttpMethod.Post, "jobs", JsonUtility.ToJson(request), ct);
 
@@ -115,7 +119,29 @@ namespace Assetgen.Editor
         public string[] motions;
         public float height = 1.8f;
         public JobSettings settings;
+        public ImageBackendRequest image_backend = new ImageBackendRequest();
     }
+
+    /// <summary>Image backend overrides for one job; empty fields keep the server's.</summary>
+    [Serializable]
+    public sealed class ImageBackendRequest
+    {
+        public string model;
+    }
+
+    [Serializable]
+    public sealed class ImageModels
+    {
+        public string backend;
+        public string automatic;
+        public string error;
+        public ImageModelOption[] options;
+        public LoadedImageModel loaded;
+    }
+
+    [Serializable] public sealed class ImageModelOption { public string id; public string label; public string recipe; }
+
+    [Serializable] public sealed class LoadedImageModel { public string recipe; public string origin; }
 
     /// <summary>The server's job settings that the Editor sets (server.py: Settings).</summary>
     [Serializable]

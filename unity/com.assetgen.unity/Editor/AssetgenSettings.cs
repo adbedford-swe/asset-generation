@@ -50,6 +50,9 @@ namespace Assetgen.Editor
     [System.Serializable]
     public sealed class GenerationSettings
     {
+        [Tooltip("The text-to-image model (sd-server: <recipe>:<file>, a recipe or a file). Empty: automatic")]
+        public string imageModel = "";
+
         [Tooltip("Idol's image-to-splat sampling steps: fewer is faster and rougher")]
         [Min(1)] public int idolSteps = 50;
 

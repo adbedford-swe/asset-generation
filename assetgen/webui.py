@@ -244,14 +244,35 @@ def build(manager: JobManager | None = None):
             except KeyError:
                 pass
 
-    def backend_status(backend, url):
+    def backend_status(backend, url, model=None):
+        """The backend's state, and the model picker's choices (sd-server's catalog for sdcpp)."""
         spec = ImageSpec(backend=backend, url=url or None, command=spec0.command, workflow=spec0.workflow)
         p = probe(spec)
         where = spec.base_url or spec.command or "not configured"
-        if p.get("ok"):
+        picker = gr.update(choices=[("Automatic", "")] + ([(model, model)] if model else []), value=model or "")
+        if not p.get("ok"):
+            return f"⚪ {backend} at {where} is not answering; generating from text needs it running", picker
+        if backend != "sdcpp":
             models = ", ".join(m for m in p.get("models", [])[:3] if m)
-            return f"🟢 {backend} at {where}" + (f" ({models})" if models else "")
-        return f"⚪ {backend} at {where} is not answering; generating from text needs it running"
+            return f"🟢 {backend} at {where}" + (f" ({models})" if models else ""), picker
+        from . import sdcpp
+
+        found = sdcpp.choices(spec)
+        labels = {o["id"]: o["label"] for o in found["options"]}
+        auto = labels.get(found["automatic"])
+        entries = [(f"Automatic ({auto})" if auto else "Automatic", "")]
+        entries += [(o["label"], o["id"]) for o in found["options"]]
+        if model and model not in labels:
+            entries.append((model, model))
+        loaded = found["loaded"]
+        state = (f"loaded: {loaded['recipe'] or 'a model from its command line'}" if loaded
+                 else "no model loaded; assetgen loads one for each picture")
+        note = f"🟢 sd-server at {where}, {state}"
+        if found["error"]:
+            note += f"\n\n⚠ {found['error']}"
+        elif not auto and len(found["options"]) > 1:
+            note += "\n\nPick the model to use: there are several and none is clearly the one."
+        return note, gr.update(choices=entries, value=model or "")
 
     with gr.Blocks(title="assetgen") as demo:
         gr.Markdown(f"## assetgen <small style='color:#888'>{version()}</small>\n"
@@ -277,13 +298,16 @@ def build(manager: JobManager | None = None):
                         backend_url = gr.Textbox(value=spec0.url or "", label="URL", placeholder=spec0.base_url,
                                                  max_lines=1)
                         with gr.Row():
-                            image_model = gr.Textbox(value=spec0.model or "", label="Model", max_lines=1,
-                                                     placeholder="server default")
+                            image_model = gr.Dropdown([("Automatic", "")], value="", label="Model",
+                                                      allow_custom_value=True, scale=2,
+                                                      info="sd-server: from its model folders")
                             image_size = gr.Dropdown(["512x512", "768x768", "1024x1024", "832x1216"],
                                                      value=f"{spec0.width}x{spec0.height}", label="Size",
                                                      allow_custom_value=True)
                             image_steps = gr.Number(value=spec0.steps, precision=0, label="Steps")
-                        backend_info = gr.Markdown(backend_status(spec0.backend, spec0.url))
+                        with gr.Row():
+                            backend_info = gr.Markdown("")
+                            refresh_models = gr.Button("↻", scale=0, min_width=40)
                 with gr.Tab("From an image"):
                     image = gr.Image(type="filepath", label="Character image", height=300)
                     mode = gr.Radio(["synthetic", "real"], value="synthetic", label="Image type",
@@ -366,8 +390,10 @@ def build(manager: JobManager | None = None):
         go_splat.click(start_splat, [ply, reference, name, *common], outputs)
         go_continue.click(continue_run, [runs, stage, *common], outputs)
         stop.click(cancel, job_state, None)
-        backend.change(backend_status, [backend, backend_url], backend_info)
-        backend_url.blur(backend_status, [backend, backend_url], backend_info)
+        backend.change(backend_status, [backend, backend_url, image_model], [backend_info, image_model])
+        backend_url.blur(backend_status, [backend, backend_url, image_model], [backend_info, image_model])
+        refresh_models.click(backend_status, [backend, backend_url, image_model], [backend_info, image_model])
+        demo.load(lambda: backend_status(spec0.backend, spec0.url, spec0.model), None, [backend_info, image_model])
         shown = [strip, gallery, viewer, clip, download, exports, summary, log, job_state]
         runs.input(show_run, runs, shown)
         refresh.click(lambda: gr.update(choices=list_runs(manager)), None, runs)
