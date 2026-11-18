@@ -261,7 +261,7 @@ def build(manager: JobManager | None = None):
         with gr.Row():
             with gr.Column(scale=4):
                 with gr.Tab("From text"):
-                    text = gr.Textbox(label="Describe the character", lines=2,
+                    text = gr.Textbox(label="Describe the character", lines=2, max_lines=6,
                                       placeholder="a goblin shaman with a lantern and a hooded cloak")
                     with gr.Row():
                         count = gr.Slider(1, 8, value=4, step=1, label="Candidates")
@@ -273,9 +273,10 @@ def build(manager: JobManager | None = None):
                     with gr.Accordion("Image generator", open=False):
                         backend = gr.Dropdown(sorted(BACKENDS), value=spec0.backend, label="Backend",
                                               info="sdcpp: stable-diffusion.cpp's sd-server (also A1111, Forge)")
-                        backend_url = gr.Textbox(value=spec0.url or "", label="URL", placeholder=spec0.base_url)
+                        backend_url = gr.Textbox(value=spec0.url or "", label="URL", placeholder=spec0.base_url,
+                                                 max_lines=1)
                         with gr.Row():
-                            image_model = gr.Textbox(value=spec0.model or "", label="Model",
+                            image_model = gr.Textbox(value=spec0.model or "", label="Model", max_lines=1,
                                                      placeholder="server default")
                             image_size = gr.Dropdown(["512x512", "768x768", "1024x1024", "832x1216"],
                                                      value=f"{spec0.width}x{spec0.height}", label="Size",
@@ -302,8 +303,10 @@ def build(manager: JobManager | None = None):
                                      info="Earlier stages are copied into a new run; the one you pick stays as it is. "
                                           "The settings below apply to the stages that run.")
                     go_continue = gr.Button("Run from this stage", variant="primary")
-                name = gr.Textbox(label="Name (new runs)", placeholder="from the description or file name")
-                prompts = gr.Textbox(value="\n".join(DEFAULT_PROMPTS), lines=4, label="Motions, one per line",
+                name = gr.Textbox(label="Name (new runs)", placeholder="from the description or file name",
+                                  max_lines=1)
+                prompts = gr.Textbox(value="\n".join(DEFAULT_PROMPTS), lines=4, max_lines=10,
+                                     label="Motions, one per line",
                                      info='Start with "An object" and describe one motion. Clips loop seamlessly; '
                                           'end a line with [once] for a one-shot (attack, jump).')
                 with gr.Row():
@@ -328,9 +331,10 @@ def build(manager: JobManager | None = None):
                     with gr.Row():
                         beams = gr.Number(value=10, precision=0, minimum=1, label="SkinTokens beams")
                         rig_candidates = gr.Number(value=3, precision=0, minimum=1, label="Rig candidates")
-                        rig_class = gr.Textbox(label="Rig template", placeholder="articulation (any shape)")
+                        rig_class = gr.Textbox(label="Rig template", placeholder="articulation (any shape)",
+                                               max_lines=1)
                         cfg_scale = gr.Number(value=3.0, label="Prompt strength")
-                    llm_url = gr.Textbox(label="Joint-label LLM endpoint (optional)",
+                    llm_url = gr.Textbox(label="Joint-label LLM endpoint (optional)", max_lines=1,
                                          placeholder="http://localhost:8080/v1 (llama.cpp)")
             with gr.Column(scale=6):
                 with gr.Row():
