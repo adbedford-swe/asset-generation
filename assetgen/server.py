@@ -588,7 +588,7 @@ def create_api(manager: JobManager, token: str | None = None):
     def spec_of(backend: ImageBackend | None) -> ImageSpec:
         if backend is None:
             return manager.image_spec
-        values = {k: v for k, v in backend.model_dump().items() if v is not None}
+        values = {k: v for k, v in backend.model_dump().items() if v not in (None, "")}
         spec = replace(manager.image_spec, **values)
         if spec.backend not in BACKENDS:
             raise HTTPException(422, f"unknown image backend {spec.backend!r}")
@@ -611,6 +611,16 @@ def create_api(manager: JobManager, token: str | None = None):
                 "image_backends": sorted(BACKENDS), "settings": Settings().__dict__,
                 "busy": sum(1 for j in manager.jobs.values() if j.status == "running"),
                 "queued": sum(1 for j in manager.jobs.values() if j.status == "queued")}
+
+    @router.get("/image-models", summary="The text-to-image models the image backend can load (sd-server)")
+    def image_models(url: str | None = None):
+        spec = replace(manager.image_spec, url=url) if url else manager.image_spec
+        if spec.backend != "sdcpp":
+            return {"backend": spec.backend, "loaded": None, "automatic": None, "error": None,
+                    "options": [{"id": spec.model, "label": spec.model}] if spec.model else []}
+        from . import sdcpp
+
+        return {"backend": spec.backend, "url": spec.base_url, "default": spec.model, **sdcpp.choices(spec)}
 
     @router.post("/uploads", summary="Upload an image or a .ply splat; returns an id for POST /jobs")
     async def upload(file: UploadFile = File(...)):

@@ -113,9 +113,17 @@ server, or with `ASSETGEN_IMAGE_BACKEND`, `ASSETGEN_IMAGE_URL` and `ASSETGEN_IMA
 shows a few candidates so you can pick the one to build before the 3D stages spend their minutes. To add a backend, see
 `assetgen.imagegen.register`.
 
-sd-server holds on to its peak VRAM after generating, which leaves the 3D stages short. So with `sdcpp`, assetgen
-unloads the model once the picture is made and loads it again for the next one, which sd.cpp does quickly. Pick the
-model in sd-server's web UI once (assetgen remembers the recipe), or name one with `--image-model <recipe id>`. A model
+With `sdcpp`, assetgen manages sd-server's model itself, so there's nothing to load by hand. Start sd-server with
+`--model-dir` and it can be empty. For each picture assetgen loads the model, generates, and unloads it again, because
+sd-server otherwise keeps its peak VRAM and leaves the 3D stages short (sd.cpp loads quickly). Which model:
+
+- the one you pick: the **Model** list in the web UI and Unity, or `--image-model`;
+- otherwise, whatever sd-server has loaded, or the model assetgen loaded last on that server;
+- otherwise, the model in sd-server's folders that clearly fits a text-to-image recipe. assetgen matches files to
+  sd.cpp's recipes by name (`sdxl…` → SDXL, `flux1-schnell…` → FLUX.1 schnell with its text encoders and VAE).
+
+When several models fit and none is clearly the one, assetgen says so and lists them. `--image-model` takes an entry
+from that list (`sdxl-checkpoint:checkpoints/my-model.safetensors`), a recipe (`flux1-schnell`) or a file name. A model
 given to sd-server with `-m` can't be loaded back through its API, so that one stays loaded. `--image-keep-loaded`
 (or `ASSETGEN_IMAGE_KEEP_LOADED=1`) leaves the model loaded.
 

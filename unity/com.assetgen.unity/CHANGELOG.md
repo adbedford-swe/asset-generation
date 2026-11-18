@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Image model picker in the window's Advanced section and Project Settings (Automatic, or any model the server's
+  image generator can load), `unity command assetgen image_models`, and `generate --image-model`.
+
 ## 0.4.0
 
 - Runs the assetgen server itself: starts it when you generate and none answers, shows its state in the window

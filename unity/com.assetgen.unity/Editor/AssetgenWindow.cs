@@ -25,6 +25,7 @@ namespace Assetgen.Editor
         string m_InfoError;
         bool m_Busy;
         static bool s_Starting;
+        ImageModels m_ImageModels;
         JobInfo[] m_Jobs = Array.Empty<JobInfo>();
         readonly Dictionary<string, Texture2D> m_Thumbnails = new Dictionary<string, Texture2D>();
         double m_NextRefresh;
@@ -132,6 +133,8 @@ namespace Assetgen.Editor
             {
                 m_Info = await client.InfoAsync();
                 m_Jobs = await client.JobsAsync(12);
+                if (m_ImageModels == null)
+                    m_ImageModels = await client.ImageModelsAsync();
                 m_InfoError = null;
                 foreach (var job in m_Jobs)
                     LoadThumbnail(client, job);
@@ -293,6 +296,7 @@ namespace Assetgen.Editor
             EditorGUI.BeginChangeCheck();
             using (new EditorGUI.IndentLevelScope())
             {
+                DrawImageModel(generation.FindPropertyRelative("imageModel"));
                 foreach (var name in new[] { "idolSteps", "motionSteps", "promptStrength", "seed", "loopFrames", "rootMotion",
                                              "faceBudget", "textureSize", "rigCandidates" })
                     EditorGUILayout.PropertyField(generation.FindPropertyRelative(name));
@@ -302,6 +306,41 @@ namespace Assetgen.Editor
                 serialized.ApplyModifiedPropertiesWithoutUndo();
                 settings.SaveSettings();
             }
+        }
+
+        void DrawImageModel(SerializedProperty property)
+        {
+            var options = m_ImageModels?.options ?? Array.Empty<ImageModelOption>();
+            var auto = options.FirstOrDefault(o => o.id == m_ImageModels?.automatic);
+            var labels = new List<string> { auto != null ? $"Automatic ({auto.label})" : "Automatic" };
+            var ids = new List<string> { "" };
+            foreach (var o in options)
+            {
+                labels.Add(o.label.Replace("/", "\u2215"));
+                ids.Add(o.id);
+            }
+            if (!string.IsNullOrEmpty(property.stringValue) && !ids.Contains(property.stringValue))
+            {
+                labels.Add(property.stringValue.Replace("/", "\u2215"));
+                ids.Add(property.stringValue);
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var index = Mathf.Max(0, ids.IndexOf(property.stringValue));
+                var picked = EditorGUILayout.Popup(new GUIContent("Image model",
+                    "The model the image backend loads for each picture. Automatic: what is loaded, what assetgen loaded " +
+                    "last, or the one model that clearly fits"), index, labels.ToArray());
+                property.stringValue = ids[picked];
+                if (GUILayout.Button(EditorGUIUtility.IconContent("Refresh"), EditorStyles.iconButton, GUILayout.Width(20)))
+                {
+                    m_ImageModels = null;
+                    m_NextRefresh = 0;
+                }
+            }
+            if (!string.IsNullOrEmpty(m_ImageModels?.error))
+                EditorGUILayout.HelpBox(m_ImageModels.error, MessageType.Warning);
+            else if (m_ImageModels != null && string.IsNullOrEmpty(property.stringValue) && auto == null && options.Length > 1)
+                EditorGUILayout.HelpBox("Several models fit and none is clearly the one: pick the image model.", MessageType.Info);
         }
 
         void DrawMotionHeader(Rect rect)
@@ -343,6 +382,7 @@ namespace Assetgen.Editor
                     height = height,
                     motions = motions.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).ToArray(),
                     settings = AssetgenSettings.instance.generation.ToJob(),
+                    image_backend = new ImageBackendRequest { model = AssetgenSettings.instance.generation.imageModel },
                 };
                 if (picture != null)
                     request.image = "data:image/png;base64," + Convert.ToBase64String(picture);

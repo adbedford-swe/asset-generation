@@ -44,9 +44,10 @@ speed, `AssetgenCharacter` speeds the animation up to keep the feet planted.
 
 **Window > Assetgen.** Describe the character or pick a picture, choose the motions (or a preset) and press
 **Generate character**. Progress shows per stage, and the character is imported into `Assets/Characters/<name>/` when
-it finishes, even if you close the window. **Advanced** holds Idol's steps, the motion sampler's steps, prompt
-strength, seed, loop length, root motion, mesh and texture budgets and rig candidates. They are saved with the project,
-so the window and the CLI generate the same way.
+it finishes, even if you close the window. **Advanced** holds the image model (the models the server's image
+generator can load, with Automatic first), Idol's steps, the motion sampler's steps, prompt strength, seed, loop
+length, root motion, mesh and texture budgets and rig candidates. They are saved with the project, so the window and
+the CLI generate the same way.
 
 **The server runs itself.** When nothing answers at the server URL, Generate starts `server.py` in the background (no
 console window, logging to `Library/Assetgen/server.log`) and waits until it's ready. The toolbar shows its state, with
@@ -79,6 +80,7 @@ unity command assetgen play --target a_goblin_shaman_with_a_lantern --speed 0.5
 | `job --id` / `cancel --id` | A job's progress; stop it. |
 | `import --source` | A job id, an export zip, a folder or a `.glb`/`.assetgen` pair into the project. |
 | `list` | Every character in the project, with prefab and clips. |
+| `image_models` | The text-to-image models the server can load, for `generate --image-model`. |
 | `build --character` | Rebuild a character's controller and prefab. |
 | `spawn --character` | Put a character in the open scene (`--position`, `--speed`, `--move-forward`). |
 | `play --target` | In Play mode: play a clip, or set the locomotion speed. |
