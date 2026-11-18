@@ -136,7 +136,7 @@ def build(default_device: str | None = None):
 
     devices = device_choices()
 
-    def settings(prompts, height, device, loop, root_motion, seed, repetitions, faces, texture, voxels, beams,
+    def settings(prompts, height, device, loop, loop_frames, root_motion, seed, repetitions, faces, texture, voxels, beams,
                  candidates, rig_class, cfg_scale, llm_url) -> dict:
         return dict(device=device, seed=int(seed), prompts=[p.strip() for p in prompts.splitlines() if p.strip()],
                     repetitions=int(repetitions), height=float(height) if height else None,
@@ -144,7 +144,8 @@ def build(default_device: str | None = None):
                     mesh_args=["--target_faces", str(int(faces)), "--texture_size", str(int(texture)),
                                "--resolution", str(int(voxels))],
                     llm_base_url=llm_url or None, cfg_scale=float(cfg_scale) if cfg_scale else None,
-                    loop="auto" if loop else "off", root_motion=bool(root_motion))
+                    loop=(str(int(loop_frames)) if loop_frames else "auto") if loop else "off",
+                    root_motion=bool(root_motion))
 
     def execute(o: Options, start: str | None, header: str):
         """Run the pipeline in a thread and stream log, previews and the asset into the page."""
@@ -268,6 +269,9 @@ def build(default_device: str | None = None):
                 with gr.Row():
                     loop = gr.Checkbox(value=True, label="Seamless loops",
                                        info="Loop length follows each motion's own cycle")
+                    loop_frames = gr.Number(value=0, precision=0, minimum=0, maximum=600,
+                                            label="Loop length (frames, 30 fps)",
+                                            info="0: from each motion's own cycle (3 s if it has none)")
                     root_motion = gr.Checkbox(value=False, label="Keep root motion",
                                               info="Off: loops play in place; their speed is in the clip's extras")
                 with gr.Row():
@@ -296,7 +300,7 @@ def build(default_device: str | None = None):
                 gallery = gr.Gallery(label="Stages", columns=2, height=360, object_fit="contain")
                 log = gr.Textbox(label="Log", lines=14, max_lines=14, autoscroll=True)
 
-        common = [prompts, height, device, loop, root_motion, seed, repetitions, faces, texture, voxels, beams,
+        common = [prompts, height, device, loop, loop_frames, root_motion, seed, repetitions, faces, texture, voxels, beams,
                   candidates, rig_class, cfg_scale, llm_url]
         outputs = [log, gallery, viewer, clip, download, folder, runs]
         go.click(start_new, [image, gr.State(None), gr.State(None), name, mode, *common], outputs)

@@ -81,8 +81,11 @@ asset size with seam roughness 0.1-0.8x the rest of the clip; a one-shot clip mi
 Loops play in place unless `--root-motion`; each clip's glTF `extras` carry `loop`, `loop_frames`,
 `root_motion` and `root_velocity` (m/s). Continuing a run from Motion reuses its UniMate rig preparation and the
 motion stage drives every clip in one Blender session (GLB only unless `--fbx`): a two-clip continuation took
-about 130-165 s on the laptop against about 265 s before. Still open: the 60-frame window caps a loop at 48 frames
-(1.6 s); longer cycles would need UniMate's motion expansion with the same tie across segments.
+about 130-165 s on the laptop against about 265 s before. Loops can be any length: the sampler treats a loop as a
+ring covered by overlapping 60-frame windows (README, "Loops"); measured on the Fox, 4-second rings are as smooth
+inside as single-window loops. Without a detectable cycle a clip loops over 3 s. This test fox's UniMate walk and
+trot have no regular gait cycle within 60 frames, so auto mode gave them 3-second loops; a rig whose motion does
+cycle gets one cycle per loop.
 
 ## First thing to do on the ROCm box
 

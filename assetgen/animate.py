@@ -168,16 +168,19 @@ def preprocess(rigged: Path, asset_dir: Path, name: str, env: dict, annotate: st
 
 
 def trim_loops(samples: Path, loop_prompts: set[str], log=print) -> dict[str, int]:
-    """Cut each looping motion to one period plus a closing frame equal to its first (frames 0..L)."""
-    from .motion_sampler import loop_period
+    """Cut each looping motion to one period plus a closing frame equal to its first (frames 0..L), and
+    one-shots back to the model's window (a batch with long loops comes back padded to the longest)."""
+    from .motion_sampler import WINDOW, loop_period
 
     manifest = json.loads((samples / "manifest.json").read_text())
     periods = {}
     for name, entry in manifest.get("samples", {}).items():
-        if entry.get("prompt") not in loop_prompts:
-            continue
         path = samples / manifest.get("motions_dir", "motions") / name
         motion = np.load(path)
+        if entry.get("prompt") not in loop_prompts:
+            if len(motion) > WINDOW:
+                np.save(path, motion[:WINDOW])
+            continue
         L = loop_period(motion)
         if L is None:
             log(f"[animate] warning: {name} came back without a loop; kept as sampled")
