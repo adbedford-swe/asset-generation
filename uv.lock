@@ -135,7 +135,7 @@ wheels = [
 
 [[package]]
 name = "assetgen"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },

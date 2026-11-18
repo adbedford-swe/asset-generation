@@ -3,8 +3,9 @@ from pathlib import Path
 
 import pytest
 
+from assetgen import server
 from assetgen.pipeline import branch, completed_stages, run_inputs, stage_commands
-from assetgen.webui import continued_options, list_runs
+from assetgen.webui import list_runs
 
 
 def fake_run(root: Path, name: str, done: list[str], from_image: bool = False) -> Path:
@@ -42,11 +43,18 @@ def test_branch_refuses_a_stage_whose_inputs_are_unfinished(tmp_path):
     assert not (tmp_path / "b").exists()
 
 
-def test_continued_options_point_inside_the_new_folder(tmp_path):
-    src = fake_run(tmp_path, "a", ["mesh", "rig"])
-    dst = branch(src, "rig", tmp_path / "b")
-    o = continued_options(src, dst, device="cuda:1", prompts=["An object waves."])
+def test_continued_runs_point_inside_the_new_folder(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(server, "run_pipeline", lambda o, **kw: ran.append((o, kw)))
+    manager = server.JobManager(tmp_path, ["cuda:1"])
+    src = fake_run(tmp_path, "20261101-000000-a", ["mesh", "rig"])
+    job = manager.continue_job(src.name, "rig", server.Settings(motions=["An object waves."]))
+    while job.active:
+        job.wait(job.seq, 0.1)
+    o, kw = ran[0]
+    dst = job.folder
     assert o.ply == dst / "input" / "splat.ply" and o.name == "fox" and o.device == "cuda:1"
+    assert kw["start"] == "rig" and kw["force"] and (src / "2_rig" / "marker.txt").exists()
     cmds = stage_commands(o)
     assert str(dst / "1_mesh" / "mesh.glb") in cmds["rig"][0]  # rigs the copied mesh
 
@@ -60,5 +68,5 @@ def test_run_inputs_of_older_runs_come_from_the_manifest(tmp_path):
 def test_list_runs_newest_first_with_progress(tmp_path):
     fake_run(tmp_path, "20261101-000000-a", ["mesh"])
     fake_run(tmp_path, "20261102-000000-b", ["mesh", "rig"])
-    labels = [label for label, _ in list_runs(tmp_path)]
+    labels = [label for label, _ in list_runs(server.JobManager(tmp_path, ["cpu"]))]
     assert labels == ["20261102-000000-b  ·  mesh, rig", "20261101-000000-a  ·  mesh"]

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/adbedford-swe/asset-generation/main/schema/character.schema.json",
+  "title": "assetgen character",
+  "description": "Describes a generated character's glTF (<name>.glb beside this <name>.assetgen file) so an engine can set it up: units and axes, skeleton, and what every animation clip is for.",
+  "type": "object",
+  "required": ["format", "version", "name", "model", "skeleton", "clips", "locomotion"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "format": {"const": "assetgen.character"},
+    "version": {"const": 1},
+    "name": {"type": "string", "description": "Character name; also the stem of the .glb and .assetgen files."},
+    "generator": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}, "version": {"type": "string"}}
+    },
+    "source": {
+      "type": "object",
+      "description": "What the character was made from.",
+      "properties": {
+        "prompt": {"type": "string", "description": "The description it was generated from."},
+        "image": {"type": "string"},
+        "splat": {"type": "string"},
+        "image_backend": {"type": "string"},
+        "image_model": {"type": ["string", "null"]},
+        "seed": {"type": ["integer", "null"]}
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["file", "units", "up", "forward", "height"],
+      "properties": {
+        "file": {"type": "string", "description": "The glTF binary, relative to this file."},
+        "units": {"const": "meters"},
+        "up": {"const": "+Y"},
+        "forward": {"const": "+Z", "description": "The character faces +Z, the glTF convention."},
+        "height": {"type": "number", "description": "Rest-pose height in metres; the feet stand on y = 0."},
+        "bounds": {
+          "type": "object",
+          "properties": {"min": {"$ref": "#/$defs/vec3"}, "max": {"$ref": "#/$defs/vec3"}}
+        },
+        "vertices": {"type": "integer"},
+        "triangles": {"type": "integer"},
+        "texture": {"type": ["array", "null"], "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+      }
+    },
+    "skeleton": {
+      "type": "object",
+      "required": ["joints"],
+      "properties": {
+        "root": {"type": ["string", "null"], "description": "The root joint's name."},
+        "armature": {"type": ["string", "null"], "description": "The node holding the skeleton."},
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "parent", "position"],
+            "properties": {
+              "name": {"type": "string"},
+              "parent": {"type": ["string", "null"]},
+              "position": {"$ref": "#/$defs/vec3", "description": "Rest-pose world position, metres."}
+            }
+          }
+        }
+      }
+    },
+    "clips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "prompt", "role", "loop", "duration", "frames", "fps"],
+        "properties": {
+          "name": {"type": "string", "description": "The glTF animation's name."},
+          "prompt": {"type": "string", "description": "The motion prompt it was generated from."},
+          "role": {
+            "enum": ["idle", "walk", "run", "move", "loop", "action"],
+            "description": "idle, walk, run and move are locomotion; loop is any other looping clip; action plays once."
+          },
+          "loop": {"type": "boolean", "description": "The last frame equals the first: play it on repeat."},
+          "duration": {"type": "number", "description": "Seconds."},
+          "frames": {"type": "integer"},
+          "fps": {"type": "number"},
+          "root_motion": {
+            "enum": ["in_place", "kept"],
+            "description": "in_place: the clip's travel was removed; move the character at root_velocity yourself."
+          },
+          "root_velocity": {"$ref": "#/$defs/vec3", "description": "Travel while the clip plays, m/s, glTF axes."},
+          "speed": {"type": "number", "description": "Horizontal speed of root_velocity, m/s."},
+          "seam": {
+            "type": "object",
+            "description": "How seamlessly the loop closes (finalize's measurement).",
+            "properties": {"position": {"type": "number"}, "roughness": {"type": "number"}}
+          }
+        }
+      }
+    },
+    "locomotion": {
+      "type": "object",
+      "description": "Clips to blend by ground speed: an idle at 0 m/s, then travelling loops in order of speed.",
+      "required": ["idle", "blend"],
+      "properties": {
+        "idle": {"type": ["string", "null"]},
+        "blend": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["clip", "speed"],
+            "properties": {"clip": {"type": "string"}, "speed": {"type": "number"}}
+          }
+        }
+      }
+    },
+    "preview": {"type": "string", "description": "Contact sheet of every clip, relative to this file."},
+    "license": {
+      "type": "object",
+      "properties": {"motion": {"type": "string"}, "note": {"type": "string"}}
+    }
+  },
+  "$defs": {
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+  }
+}

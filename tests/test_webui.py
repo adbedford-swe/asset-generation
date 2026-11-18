@@ -1,26 +1,28 @@
 from pathlib import Path
 
-from assetgen import webui
+from assetgen import server, webui
+from assetgen.imagegen import ImageSpec
 
 
-def test_builds():
+def test_builds(tmp_path):
     import gradio as gr
 
-    assert isinstance(webui.build("cpu"), gr.Blocks)
+    manager = server.JobManager(tmp_path, ["cpu"], ImageSpec(backend="sdcpp", url="http://127.0.0.1:9"))
+    assert isinstance(webui.build(manager), gr.Blocks)
 
 
 def test_best_glb_and_stage_images_follow_progress(tmp_path):
     out = tmp_path
-    assert webui.best_glb(out, "fox") is None and webui.stage_images(out, "fox") == []
+    assert server.best_glb(out, "fox") is None and webui.stage_images(out, "fox") == []
     (out / "1_mesh").mkdir()
     (out / "1_mesh" / "mesh.glb").write_bytes(b"x")
     (out / "1_mesh" / "front.png").write_bytes(b"x")
-    assert webui.best_glb(out, "fox") == out / "1_mesh" / "mesh.glb"
+    assert server.best_glb(out, "fox") == out / "1_mesh" / "mesh.glb"
     (out / "2_rig").mkdir()
     (out / "2_rig" / "rigged.glb").write_bytes(b"x")
-    assert webui.best_glb(out, "fox") == out / "2_rig" / "rigged.glb"
+    assert server.best_glb(out, "fox") == out / "2_rig" / "rigged.glb"
     (out / "fox.glb").write_bytes(b"x")
-    assert webui.best_glb(out, "fox") == out / "fox.glb"
+    assert server.best_glb(out, "fox") == out / "fox.glb"
     assert [Path(p).name for p, _ in webui.stage_images(out, "fox")] == ["front.png"]
 
 
@@ -33,5 +35,17 @@ def test_viewer_html(tmp_path):
     assert 'animation-name="walks &quot;fast&quot;"' in html
 
 
+def test_character_markdown():
+    data = {"name": "fox", "model": {"height": 0.6, "triangles": 20000}, "skeleton": {"joints": [{}] * 13},
+            "source": {"prompt": "a red fox"},
+            "clips": [{"name": "walks_forward", "role": "walk", "loop": True, "duration": 3.0, "speed": 0.22},
+                      {"name": "jumps", "role": "action", "loop": False, "duration": 1.9}],
+            "locomotion": {"blend": [{"clip": "idle", "speed": 0.0}, {"clip": "walks_forward", "speed": 0.22}]}}
+    text = webui.character_markdown(data)
+    assert "0.60 m tall, 13 joints" in text and "*a red fox*" in text
+    assert "| `walks_forward` | walk | yes | 3.00 s | 0.22 m/s |" in text and "| `jumps` | action | once |" in text
+    assert "`idle` (0.00) → `walks_forward` (0.22)" in text
+
+
 def test_slug():
-    assert webui._slug("my fox!") == "my_fox" and webui._slug("") == "asset"
+    assert server.slug("my fox!") == "my_fox" and server.slug("") == "asset"

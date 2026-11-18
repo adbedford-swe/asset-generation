@@ -1,0 +1,25 @@
+{
+  "name": "com.assetgen.unity",
+  "version": "0.3.0",
+  "displayName": "Assetgen Characters",
+  "description": "Text or a picture to an animated character, inside the Editor. Imports assetgen characters (.glb + .assetgen) as ready-to-use prefabs with an Animator Controller and a locomotion blend tree, generates new ones from an assetgen server, and adds `assetgen` commands to the Unity CLI.",
+  "unity": "6000.0",
+  "documentationUrl": "https://github.com/adbedford-swe/asset-generation/tree/main/unity/com.assetgen.unity",
+  "keywords": [
+    "character",
+    "animation",
+    "generative",
+    "gltf",
+    "rigging",
+    "ai"
+  ],
+  "author": {
+    "name": "assetgen",
+    "url": "https://github.com/adbedford-swe/asset-generation"
+  },
+  "dependencies": {
+    "com.unity.cloud.gltfast": "6.21.0",
+    "com.unity.modules.animation": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+    "name": "Assetgen.Editor.Pipeline",
+    "rootNamespace": "Assetgen.Editor",
+    "references": [
+        "Assetgen.Runtime",
+        "Assetgen.Editor",
+        "Unity.Pipeline.Attributes"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "ASSETGEN_PIPELINE"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.pipeline",
+            "expression": "1.0.0",
+            "define": "ASSETGEN_PIPELINE"
+        }
+    ],
+    "noEngineReferences": false
+}

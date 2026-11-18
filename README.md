@@ -1,155 +1,351 @@
-# asset-generation
+<!--
+  HEADER IMAGE: a looping GIF of the web UI and Unity side by side, a sentence typed in, the character
+  appearing stage by stage, then walking around a Unity scene. Save it as docs/header.gif and replace this
+  comment with:
+  <p align="center"><img src="docs/header.gif" alt="assetgen: a sentence in, an animated character in Unity" width="100%"></p>
+-->
 
-One image in, one engine-ready `.glb` out: a textured, rigged character with a set of
-text-prompted animation clips. Built for Linux + ROCm (2x RX 7900 XTX), and runs on
-CUDA or CPU too.
+<h1 align="center">assetgen</h1>
+
+<p align="center"><b>Type a sentence. Get a rigged, animated character in your game engine.</b></p>
+
+<p align="center">
+  Text or a picture → textured mesh → skeleton → motion clips → a prefab in Unity or a scene in Godot.<br>
+  Open models, one GPU, no artist in the loop. <i>Experimental.</i>
+</p>
+
+---
+
+```bash
+python server.py
+```
 
 ```
-image ──Idol──▶ 3D Gaussian splat ──▶ upright, front-facing, textured mesh
-      ──SkinTokens──▶ skeleton + skin weights ──UniMate──▶ motions ──▶ asset.glb (every clip)
+"a goblin shaman with a lantern and a hooded cloak"
+        │
+        ├── image        stable-diffusion.cpp, A1111, ComfyUI, OpenAI-compatible, or your own picture
+        ├── splat        Idol: one image to a 3D Gaussian splat
+        ├── mesh         upright, front-facing, textured, 40k faces
+        ├── rig          SkinTokens: a skeleton for any body (bipeds, quadrupeds, tails, wings)
+        ├── motion       UniMate: one clip per sentence ("An object walks forward."), loops that close seamlessly
+        └── finalize     goblin.glb  +  goblin.assetgen  →  Unity prefab · Godot scene · any glTF engine
 ```
 
-| Stage | What runs | Output |
+Stable Diffusion made "describe it and see it" normal for pictures. assetgen tries the same for the thing a game
+actually needs: a character that stands on the ground, faces forward, has bones, and walks, runs, idles and attacks
+in loops that never pop. It's a tight chain of open research models: Idol, SkinTokens and UniMate, plus whichever
+image generator you already run. That chain is wrapped so the output drops into an engine and *works*: the right
+clips loop, a locomotion blend tree runs at the speeds the clips were generated at, and there's a prefab you can
+drag into a scene.
+
+## What you get
+
+- **A character from a sentence or a picture.** Text goes through your image generator first; a picture skips that.
+- **Any anatomy.** The rig isn't a humanoid template: horns, tails, four legs and an axe all get bones.
+- **Motion from text, one clip per line.** `An object roars. [once]`. Loops close to within a millionth of the
+  character's size, at any length.
+- **One `.glb` with every clip**, Y-up, facing +Z, feet on the ground, at the height you asked for.
+- **A character file** (`.assetgen`) that tells engines what each clip is for, whether it loops and how fast it
+  travels, so they can wire it up without guessing.
+- **Unity:** a package that turns that into an Animator Controller with a speed-driven locomotion blend tree and a
+  prefab, a generator window in the Editor, and `unity command assetgen ...` for the new Unity CLI and its MCP mode.
+- **Godot:** an addon that imports the same character ready to play, with an AnimationTree.
+- **A server** with a web UI and an HTTP API on one port, so you, a script or an LLM agent can drive all of it.
+
+## Quick start
+
+On Linux with an AMD GPU (ROCm). CUDA and CPU work too; see [Setup](#setup).
+
+```bash
+bash scripts/setup_rocm.sh          # environment, model checkouts and weights (~4 GB), then a self-check
+uv run python server.py             # web UI on http://127.0.0.1:7860, API on /api/v1, reference on /docs
+```
+
+Open the web UI, type a description, press **Generate character**. Every stage's result appears as it finishes, and
+the character ends up in an interactive viewer with a clip picker, plus downloads for Unity and Godot.
+
+To make characters from text you need an image generator running. With
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s server, for example:
+
+```bash
+sd-server -m <your model> --listen-port 1234 &
+uv run python server.py --image-backend sdcpp --image-url http://127.0.0.1:1234
+```
+
+Or from the command line, with no server:
+
+```bash
+uv run assetgen run --text "a goblin shaman with a lantern" --out outputs/goblin --height 1.2 \
+    --prompt "An object stands idle and breathes." "An object walks forward." "An object casts a spell. [once]"
+uv run assetgen export outputs/goblin --engine unity --project ~/MyGame
+```
+
+## Text to image: bring your own generator
+
+The 3D stages want one picture of one character, whole, on a plain background. assetgen frames your description that
+way (`"<your text>, full body character, standing in a relaxed A-pose, ... plain white background"`; `--raw-prompt`
+turns it off) and asks whichever backend you point it at:
+
+| Backend | Talks to | Default address |
 |---|---|---|
-| `generate` | [Idol](https://github.com/adbedford-swe/idol-sdk) (ROCm fork) | `0_splat/splat.ply`, `input.png`, `camera.json` |
-| `mesh` | pure-PyTorch splat rasterizer, TSDF fusion with silhouette carving, marching cubes, quadric decimation, xatlas, occlusion-aware texture bake | `1_mesh/mesh.glb`, `front.png`, `compare.png`, `report.json` |
-| `rig` | [SkinTokens / TokenRig](https://github.com/VAST-AI-Research/SkinTokens) | `2_rig/rigged.glb`, `rigged.json`, `preview.png` |
-| `animate` | [UniMate](https://github.com/Friedrich-M/UniMate) `rig_preprocess`, sampler and mesh driver | `3_motion/animated/*.glb`, `clips.json` |
-| `finalize` | glTF animation merge | `<name>.glb`, with one named animation per prompt |
+| `sdcpp` | stable-diffusion.cpp's `sd-server` (`/sdapi/v1/txt2img`) | `http://127.0.0.1:1234` |
+| `a1111` | AUTOMATIC1111, Forge, SD.Next (same API) | `http://127.0.0.1:7860` |
+| `openai` | Any OpenAI-compatible `/v1/images/generations`: OpenAI, LocalAI, sd-server | `https://api.openai.com/v1` |
+| `comfyui` | Your ComfyUI workflow (API format, with `{{prompt}}`, `{{seed}}`, ... placeholders) | `http://127.0.0.1:8188` |
+| `command` | Any program: `--image-command "sd-cli -m model.gguf -p {prompt} -o {out} -s {seed}"` | |
 
-## Setup (ROCm)
+Set them per run (`--image-backend`, `--image-url`, `--image-model`, `--image-size 832x1216`, `--image-steps`), per
+server, or with `ASSETGEN_IMAGE_BACKEND`, `ASSETGEN_IMAGE_URL` and `ASSETGEN_IMAGE_MODEL`. Keys come from
+`ASSETGEN_IMAGE_API_KEY` (or `OPENAI_API_KEY`) and are never written to run folders. In the web UI, **Preview images**
+shows a few candidates so you can pick the one to build before the 3D stages spend their minutes. To add a backend, see
+`assetgen.imagegen.register`.
+
+## The server
+
+`python server.py` (same as `assetgen serve`) runs the web UI and the API on one port and one job queue: a job
+started from the browser shows up in the API and in Unity's window, and the other way round. Each job is a run folder
+under `outputs/webui/`, laid out like `assetgen run`, so jobs survive restarts and the CLI can resume them. With
+several GPUs (`--devices cuda:0,cuda:1`), jobs run side by side, one per GPU.
+
+```bash
+curl -s localhost:7860/api/v1/jobs -H 'Content-Type: application/json' -d '{
+  "prompt": "a clockwork owl with brass wings",
+  "motions": ["An object stands idle.", "An object flaps its wings and flies forward.", "An object screeches. [once]"],
+  "height": 0.6
+}'
+# {"id": "20261118-181502-a_clockwork_owl_with_brass_wings", "status": "queued", "stages": {...}, "urls": {...}}
+
+curl -N localhost:7860/api/v1/jobs/<id>/events                    # live log and progress (server-sent events)
+curl -o owl-unity.zip localhost:7860/api/v1/jobs/<id>/export/unity
+```
+
+| Endpoint | |
+|---|---|
+| `POST /api/v1/jobs` | A character from `prompt`, `image` (base64), `upload`, or `draft` (a candidate picked from `/images`) |
+| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Status, stage, progress, preview URLs; the character file once done |
+| `GET /api/v1/jobs/{id}/events` | Server-sent events: log lines and status until the job ends |
+| `POST /api/v1/jobs/{id}/continue` | Redo from `mesh`, `rig`, `animate` or `finalize` (new motions on the same rig, say) in a new job |
+| `POST /api/v1/jobs/{id}/cancel` | Stops the stage and everything it started |
+| `GET /api/v1/jobs/{id}/export/{unity,godot,gltf}` | A zip ready for the engine |
+| `POST /api/v1/images` | Candidate pictures for a prompt, to choose from |
+| `POST /api/v1/uploads` | An image or a `.ply` splat, for `POST /jobs` |
+| `GET /api/v1/info` | Version, devices, image backend health, default motions |
+
+`/docs` has the full reference. To listen beyond localhost, set a token (`--token` or `ASSETGEN_API_TOKEN`) and send
+`Authorization: Bearer <token>`.
+
+## Unity
+
+The [Unity package](unity/com.assetgen.unity) (Unity 6) installs from git:
+
+```
+https://github.com/adbedford-swe/asset-generation.git?path=/unity/com.assetgen.unity
+```
+
+or `assetgen export <run> --engine unity --project <project>` copies the character in and adds the package for you.
+
+Drop `goblin.glb` and `goblin.assetgen` into `Assets/` and the package builds `goblin.controller` and
+`goblin.prefab`. The controller has a **Locomotion** state that blends idle, walk and run on a `Speed` parameter in
+metres per second, at the speeds the clips were generated at. Every clip also gets its own state, and one-shots fade
+back to Locomotion when they finish. Clips play in place, so your controller moves the character and the Animator
+never fights it:
+
+```csharp
+var goblin = GetComponent<AssetgenCharacter>();
+goblin.Speed = goblin.WalkSpeed;          // walks, feet planted
+goblin.Play("casts_a_spell");             // a one-shot; returns to Locomotion by itself
+```
+
+**Window > Assetgen** generates from inside the Editor: describe or pick a picture, choose motions (or a preset),
+press Generate. The character lands in `Assets/Characters/` when it's done.
+
+**For agents.** With the [Unity CLI](https://docs.unity.com/en-us/unity-cli) and its Pipeline package in the
+project, the package adds an `assetgen` command group to the running Editor:
+
+```bash
+unity command assetgen generate --prompt "a goblin shaman with a lantern" --wait --timeout 1800
+unity command assetgen spawn --character a_goblin_shaman_with_a_lantern --position 0,0,3 --speed 0.5
+unity command assetgen list
+```
+
+`unity mcp` serves the same commands as MCP tools (`assetgen_generate`, `assetgen_spawn`, `assetgen_play`, ...), so an
+agent in Claude Code, Cursor or any MCP client can go from a sentence to a character walking in the scene.
+[The package README](unity/com.assetgen.unity/README.md) lists every command.
+
+## Godot
+
+```bash
+assetgen export outputs/goblin --engine godot --project ~/my_godot_game
+```
+
+This copies the character into `characters/goblin/` and the [addon](godot/addons/assetgen) into `addons/assetgen`, and
+enables it. On import, every clip gets the right loop mode, and the scene gets an `AnimationTree` (Locomotion
+blend space on speed, a state per clip, one-shots returning on their own) and the `AssetgenCharacter` script.
+Instance `goblin.glb` and:
+
+```gdscript
+$Goblin.speed = $Goblin.speed_of("walk")
+$Goblin.play(&"casts_a_spell")
+```
+
+A `.glb` and `.assetgen` copied in by hand are picked up too. `godot/tests/test_character.gd` checks an imported
+character headless; `ASSETGEN_GODOT=<godot binary> uv run pytest tests/test_godot.py` runs it in CI.
+
+## The character file
+
+`<name>.assetgen` is JSON ([schema](schema/character.schema.json)) beside `<name>.glb`. The glTF holds the geometry and
+motion; this file says what an engine needs to know about them:
+
+```jsonc
+{
+  "format": "assetgen.character", "version": 1, "name": "fox",
+  "model": {"file": "fox.glb", "units": "meters", "up": "+Y", "forward": "+Z", "height": 0.6},
+  "skeleton": {"root": "bone_0", "joints": [{"name": "bone_0", "parent": null, "position": [0, 0.24, 0]}, "..."]},
+  "clips": [
+    {"name": "walks_forward", "prompt": "An object walks forward.", "role": "walk", "loop": true,
+     "duration": 3.0, "root_motion": "in_place", "root_velocity": [0.0, 0.0, 0.219], "speed": 0.219},
+    {"name": "jumps_in_place", "role": "action", "loop": false, "duration": 1.97, "...": "..."}
+  ],
+  "locomotion": {"idle": "stands_idle_and_breathes",
+                 "blend": [{"clip": "stands_idle_and_breathes", "speed": 0}, {"clip": "walks_forward", "speed": 0.219},
+                           {"clip": "runs_forward", "speed": 0.466}]},
+  "source": {"prompt": "a red fox"},
+  "license": {"motion": "CC-BY-NC-4.0", "note": "..."}
+}
+```
+
+Roles come from the motion prompts (idle, walk, run, other travelling loops, other loops, one-shot actions) and
+speeds from the clips themselves, so an engine can build locomotion without being told which clip is which.
+
+## For LLM agents and scripts
+
+Everything is reachable without a browser. Pick whichever fits the harness:
+
+- **HTTP:** `POST /api/v1/jobs` with a prompt, follow `/events` or poll the job, fetch `/export/<engine>`. The OpenAPI
+  schema is at `/openapi.json`.
+- **CLI:** `assetgen run --text ...`, `assetgen batch --texts characters.txt` (one character per line, spread over
+  your GPUs), `assetgen export ... --project ...`.
+- **Unity CLI / MCP:** `unity command assetgen ...` inside a running Editor, or the same commands as MCP tools through
+  `unity mcp`.
+
+## Setup
 
 ```bash
 bash scripts/setup_rocm.sh
 ```
 
-Idol is installed from the private `adbedford-swe/idol-sdk` repository, so git on the machine needs read
-access to it. The script checks first, runs `gh auth setup-git` if `gh` is logged in, and otherwise says what
-to fix. It then installs uv if it is missing and builds `.venv` from `uv.lock` (Python 3.11, torch 2.14.1+rocm7.2,
-bpy 4.5 as a module, so no Blender install is needed). It then runs `assetgen setup` (pinned SkinTokens and
-UniMate checkouts in `third_party/`, plus their weights: about 3 GB) and `assetgen doctor`. Idol's image
-encoders (DINOv3, FLUX.2) are gated on Hugging Face: request access and run `hf auth login`, or keep the
-copies already in `~/.cache/huggingface`, which are used offline.
+Idol installs from the private `adbedford-swe/idol-sdk` repository, so git on the machine needs read access to it. The
+script checks first, runs `gh auth setup-git` if `gh` is logged in, and otherwise says what to fix. It then installs uv
+if it is missing and builds `.venv` from `uv.lock` (Python 3.11, torch 2.14.1+rocm7.2, bpy 4.5 as a module, so no
+Blender install is needed). It then runs `assetgen setup` (pinned SkinTokens and UniMate checkouts in `third_party/`,
+plus their weights: about 3 GB) and `assetgen doctor`. Idol's image encoders (DINOv3, FLUX.2) are gated on Hugging
+Face: request access and run `hf auth login`, or keep the copies already in `~/.cache/huggingface`, which are used
+offline.
 
-`assetgen run` (and the web UI) also fetches the checkouts and weights itself if they are missing, so a run on
-a machine where `assetgen setup` never ran or stopped early completes the setup first.
+`assetgen run` (and the server) also fetches the checkouts and weights itself if they are missing. `assetgen doctor`
+checks the GPU, the fused attention kernels (RDNA3 needs `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, which every
+stage sets), every import, the checkouts at their pinned commits, the weights and free disk space.
 
-`assetgen doctor` checks the GPU, the fused attention kernels (RDNA3 needs
-`TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, which every stage sets), every import, the checkouts at their
-pinned commits, the weights and free disk space.
+On Windows (CUDA torch from the cu130 index), put the venv and `third_party/` on a short path
+(`UV_PROJECT_ENVIRONMENT`, `ASSETGEN_THIRD_PARTY`), since several checkpoint paths pass the 260-character limit, and
+set `UV_SYSTEM_CERTS=1` behind a TLS-intercepting proxy. UniMate's preview renderer is skipped there because it uses
+`fcntl`.
 
-## Use
+## Command line
 
 ```bash
 uv run assetgen run --image demon.png --out outputs/demon --height 1.9 \
     --prompt "An object stands idle and breathes." "An object walks forward." \
-             "An object swings a weapon overhead." "An object roars."
-
-uv run assetgen batch --images figures/ --out outputs --devices cuda:0,cuda:1   # one asset per GPU at a time
-uv run assetgen batch --splats outputs/ --out remeshed --from mesh --devices cuda:0,cuda:1   # <name>/splat.ply (+ input.png)
-uv run assetgen run --ply splat.ply --reference input.png --out outputs/x      # start from an existing splat
-uv run assetgen run --image demon.png --out outputs/demon --from rig --force    # redo from a stage
+             "An object swings a weapon overhead. [once]" "An object roars. [once]"
+uv run assetgen run --text "a stone golem covered in moss" --out outputs/golem --image-backend comfyui \
+    --comfy-workflow workflows/flux.json
+uv run assetgen batch --texts characters.txt --out outputs --devices cuda:0,cuda:1
+uv run assetgen batch --images figures/ --out outputs --devices cuda:0,cuda:1
+uv run assetgen run --ply splat.ply --reference input.png --out outputs/x       # start from an existing splat
+uv run assetgen run --image demon.png --out outputs/demon --from rig --force     # redo from a stage
+uv run assetgen image --prompt "a stone golem" --out drafts/golem --count 4      # just the pictures
+uv run assetgen export outputs/demon --engine godot --zip
 ```
 
-Or from a browser:
+Each stage runs in its own process, so GPU memory is released between models, and logs to `<out>/logs/<stage>.log`. A
+stage is skipped when its outputs exist and it last ran with the same arguments. Once a stage runs, every later stage
+runs too.
 
-```bash
-uv run assetgen webui                    # http://127.0.0.1:7860
-uv run assetgen webui --host 0.0.0.0     # reachable from other machines on the network
-```
+Motion prompts follow UniMate's training captions: start with "An object" and describe one motion ("An object jumps in
+place.", not "A demon jumps."). Without `--prompt` you get idle, walk and run loops and a one-shot attack.
 
-Upload an image (or a splat and its Idol input image), list the motions and press Generate. The log streams,
-each stage's preview appears as it finishes (front view, splat against mesh, skeleton, every clip), and the
-finished asset plays in an interactive 3D viewer with a clip picker and a download link. Runs land in
-`outputs/webui/<time>-<name>/`, laid out like `assetgen run`, so the CLI can resume them.
+**Loops.** Every clip loops seamlessly unless its prompt ends in `[once]`. A looping clip's last frame is its first,
+and the motion through the seam is as smooth as anywhere else in it. Loops play in place by default: a walk's forward
+travel is removed and its speed goes into the character file (and the clip's glTF `extras`), so game code moves the
+character to match. `--root-motion` keeps the travel, for engines that drive movement from the root bone. `--loop off`
+turns looping off; `--loop 120` makes 120-frame (4 s) loops, any length up to 600 frames.
 
-**Continue a run** picks up an earlier run from any stage: keep a mesh you like and re-rig it, or keep the
-rig and generate different motions. Selecting a run shows its results; *Run from this stage* copies its
-results up to that stage into a new run folder and runs the rest with the current settings, so the run you
-started from is never changed and you can branch it as often as you like.
+Other options: `--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3; try 5 to 7
+when a prompt is ignored), `--rig-class mixamo` (force a Mixamo-template skeleton on a humanoid), `--num-beams`
+(SkinTokens beam width, default 10), `--faces` / `--texture` / `--voxels` (mesh budget),
+`--llm-base-url http://localhost:8080/v1` (label joints with a local llama.cpp server), `--mode real` (photographs).
 
-Each stage runs in its own process, so GPU memory is released between models, and logs to
-`<out>/logs/<stage>.log`. A stage is skipped when its outputs exist and it last ran with the same arguments.
-Once a stage runs, every later stage runs too.
-
-Prompts follow UniMate's training captions: start with "An object" and describe one motion ("An object
-jumps in place.", not "A demon jumps."). Without `--prompt` you get idle, walk and run loops and a one-shot
-attack.
-
-**Loops.** Every clip loops seamlessly unless its prompt ends in `[once]` (`"An object attacks forward. [once]"`).
-A looping clip's last frame is its first, and the motion through the seam is as smooth as anywhere else in it.
-By default loops play in place: a walk's forward travel is removed, and the speed it walked at is stored in the
-clip's glTF `extras` (`root_velocity`, m/s, with `loop` and `loop_frames`) so game code can move the character
-to match. `--root-motion` keeps the travel instead, for engines that drive movement from the root bone.
-`--loop off` turns looping off; `--loop 120` makes 120-frame (4 s) loops, any length up to 600 frames. Finalize measures every seam and
-writes it, with the clips' metadata, to `<name>.json`.
-
-Useful options: `--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3,
-try 5 to 7 when a prompt is ignored), `--rig-class mixamo` (force a Mixamo-template skeleton on a humanoid),
-`--num-beams` (SkinTokens beam width, default 10), `--faces` / `--texture` / `--voxels` (mesh budget),
-`--llm-base-url http://localhost:8080/v1` (label joints with a local llama.cpp server instead of
-UniMate's offline rules), `--mode real` (photographs).
-
-`assetgen synth --mesh Fox.glb --out testdata/fox` turns any textured mesh into an Idol-like splat and
-input image (written Y-down, at a known yaw). That's useful for checking the pipeline without Idol.
+`assetgen synth --mesh Fox.glb --out testdata/fox` turns any textured mesh into an Idol-like splat and input image,
+for checking the pipeline without Idol.
 
 ## How it works, and why
 
-**Orientation.** Idol writes its PLY Y-down (its z-up object turned +90 degrees about X) at whatever yaw
-the image implied, and rigging and motion both depend on the asset being upright and facing a known way.
-The mesh stage renders the splat around the vertical axis, upright and flipped, and matches each view
-against Idol's preprocessed input image (silhouette IoU plus colour agreement, cropped to bounding boxes
-so focal length does not matter). It then refines the facing with the splat's mirror-symmetry plane. The
-character is taken to face roughly towards the camera of the input image, so use an image that shows its front
-or a three-quarter view: one taken from behind gives an asset facing backwards. The
-asset comes out Y-up, facing +Z (the glTF convention), centred and standing on y = 0. On synthetic
-inputs with known pose, facing is recovered to within 0.2 degrees from three-quarter views.
+**Orientation.** Idol writes its PLY Y-down (its z-up object turned +90 degrees about X) at whatever yaw the image
+implied, and rigging and motion both depend on the asset being upright and facing a known way. The mesh stage renders
+the splat around the vertical axis, upright and flipped, and matches each view against Idol's preprocessed input image
+(silhouette IoU plus colour agreement, cropped to bounding boxes so focal length does not matter). It then refines the
+facing with the splat's mirror-symmetry plane. The character is taken to face roughly towards the camera of the input
+image, so use an image that shows its front or a three-quarter view. The asset comes out Y-up, facing +Z (the glTF
+convention), centred and standing on y = 0. On synthetic inputs with known pose, facing is recovered to within 0.2
+degrees from three-quarter views.
 
-**Mesh.** The splat is rendered from 64 cameras spread over the sphere (RGB, coverage, median depth),
-fused into a truncated signed distance volume where uncovered pixels carve empty space, then meshed and
-cleaned: floating islands are dropped, Taubin smoothing is applied, and quadric decimation brings it to
-40k faces. The texture is baked by projecting every texel into the views that see it unoccluded (depth
-test), weighted towards frontal views. Texels no view sees take the colour of the nearest Gaussians, and
-chart borders are dilated. `report.json` scores the mesh against the splat from 8 cameras the bake never
-used (colour PSNR, silhouette IoU) and `compare.png` shows the pairs.
+**Mesh.** The splat is rendered from 64 cameras spread over the sphere (RGB, coverage, median depth), fused into a
+truncated signed distance volume where uncovered pixels carve empty space, then meshed and cleaned: floating islands
+are dropped, Taubin smoothing is applied, and quadric decimation brings it to 40k faces. The texture is baked by
+projecting every texel into the views that see it unoccluded (depth test), weighted towards frontal views. Texels no
+view sees take the colour of the nearest Gaussians, and chart borders are dilated. `report.json` scores the mesh
+against the splat from 8 cameras the bake never used (colour PSNR, silhouette IoU) and `compare.png` shows the pairs.
 
-**Rig.** SkinTokens runs from its checkout with no Gradio, demo script or Blender server. The mesh goes
-through its own `.npz` loader, and the predicted rig is mapped back exactly (its normalisation is a
-uniform scale and shift of the same vertices). flash-attn is replaced by an SDPA shim and the Qwen3
-backbone uses SDPA, so nothing CUDA-only is needed. Rigs over UniMate's 70-joint budget get their
-lightest leaf bones folded into their parents.
+**Rig.** SkinTokens runs from its checkout with no Gradio, demo script or Blender server. The mesh goes through its own
+`.npz` loader, and the predicted rig is mapped back exactly (its normalisation is a uniform scale and shift of the
+same vertices). flash-attn is replaced by an SDPA shim and the Qwen3 backbone uses SDPA, so nothing CUDA-only is
+needed. Several rigs are sampled and the most plausible kept (joints inside the mesh, mirror symmetry, no runaway
+chains). Rigs over UniMate's 70-joint budget get their lightest leaf bones folded into their parents.
 
-**Motion.** Sampling uses a fixed-step solve (32 Euler steps) instead of UniMate's adaptive dopri5 at
-atol 1e-6: on the same noise, 50 steps differ from dopri5 by 0.3-1.2% of the features' spread and 25 steps by
-0.5-2.4%, at a third to a seventh of the time. All clips are driven in one Blender session, GLB only unless
-`--fbx` is given. The rig's UniMate preparation is reused when the rig and its settings have not changed, which
-is what continuing a run from the motion stage hits. UniMate's `rig_preprocess` runs without stopping for review. The facing pair it needs comes
-from geometry: since the asset faces +Z, it is the most clearly mirrored pair of joints near the root,
-with the right-hand one at -X. Joint labels come from UniMate's offline rules (geometric labels for
-SkinTokens' unnamed bones) or an LLM. UniMate was written for bpy 4.0. Under bpy 4.5 its rebuilt actions
-were left on no action slot (the 4.4 animation system), which exported clips with no animation, so
-`assetgen.unimate_compat` assigns the slot. bpy can also crash while the interpreter shuts down after its
-files are written; the stage checks for the files instead of trusting that exit code.
+**Motion.** Sampling uses a fixed-step solve (32 Euler steps) instead of UniMate's adaptive dopri5 at atol 1e-6: on
+the same noise, 50 steps differ from dopri5 by 0.3-1.2% of the features' spread and 25 steps by 0.5-2.4%, at a third
+to a seventh of the time. All clips are driven in one Blender session. UniMate's `rig_preprocess` runs without stopping
+for review; the facing pair it needs comes from geometry (the asset faces +Z, so it is the most clearly mirrored pair
+of joints near the root, with the right-hand one at -X). UniMate was written for bpy 4.0; under bpy 4.5 its rebuilt
+actions were left on no action slot, which exported clips with no animation, so `assetgen.unimate_compat` assigns the
+slot.
 
-**Loops.** UniMate denoises one 60-frame window at a time. `assetgen.motion_sampler` treats each loop as a
-ring of L frames, of any length, covered by overlapping 60-frame windows that wrap around its end. Every
-sampling step runs all windows of all clips through the model as one batch, blends each frame's velocity over
-the windows covering it (weighted towards window centres) and advances the ring; the windows shift every step
-so no window edge settles into the motion. This is the MultiDiffusion idea on a circular time axis. A ring has
-no ends, so the clip is periodic by construction: there is no seam to blend, and the frames either side of the
-wrap are as continuous as any other neighbours. A ring shorter than a window simply wraps within it. All of
-UniMate's per-frame features are independent of world position (root-relative joint positions, local rotations,
-facing-frame velocities, root height), so equal features mean the same pose moving the same way while the root
-still travels. With `--loop auto` (the default) a quick free pass over 120 frames reveals the motion's cycle
-(autocorrelation of its standardised joint features, first strong peak) and the loop is one cycle, or the fewest
-whole cycles lasting at least 20 frames; a motion without a cycle loops over 3 seconds. On a test fox, 3- and
-4-second loops close to within 3e-7 of the asset's size with seams 0.5-0.8x as rough as the rest of the clip,
-and the 4-second rings are as smooth inside (median and 99th-percentile frame-to-frame change) as loops made in
-a single window, so the windows leave no trace.
+**Loops.** UniMate denoises one 60-frame window at a time. `assetgen.motion_sampler` treats each loop as a ring of L
+frames, of any length, covered by overlapping 60-frame windows that wrap around its end. Every sampling step runs all
+windows of all clips through the model as one batch, blends each frame's velocity over the windows covering it
+(weighted towards window centres) and advances the ring; the windows shift every step so no window edge settles into
+the motion. This is the MultiDiffusion idea on a circular time axis. A ring has no ends, so the clip is periodic by
+construction: there is no seam to blend. With `--loop auto` (the default) a quick free pass reveals the motion's cycle
+(autocorrelation of its standardised joint features) and the loop is one cycle, or the fewest whole cycles lasting at
+least 20 frames; a motion without a cycle loops over 3 seconds. On a test fox, loops close to within 3e-7 of the
+asset's size with seams 0.1-0.8x as rough as the rest of the clip.
 
-**Finalize.** Every clip drives the same canonical asset, so the clips' animations are merged into one
-file by node name and named after their prompts. Looping clips are made to loop in place (or keep their root
-motion) and get their metadata. `--height` scales the armature root.
+**Finalize.** Every clip drives the same canonical asset, so the clips' animations are merged into one file by node
+name and named after their prompts. Looping clips are made to loop in place (or keep their root motion) and get their
+metadata, `--height` scales the armature, and the asset is grounded: UniMate's canonical asset isn't, so the feet are
+put on y = 0 where they land through the looping clips. Then the clips are classified (idle, walk, run, action) and the
+character file is written.
+
+## Status
+
+Experimental, and honest about it:
+
+- End to end on Linux + ROCm (2x RX 7900 XTX) and on a 4 GB Windows laptop GPU (CUDA), apart from Idol on the laptop.
+- The server, API, web UI and exporters run on real pipeline output. The Unity package has run in Unity 6.3 driven
+  by the Unity CLI (import, controller, prefab, Play mode, every `assetgen` command), and the Godot addon passes its
+  headless checks on Godot 4.7. See [HANDOFF.md](HANDOFF.md) for what has run where.
+- Quality follows the models: thin parts (fingers, weapons) can mesh coarsely, SkinTokens occasionally gives a
+  creature an odd extra bone, and UniMate's motions range from convincing to charming.
 
 ## Development
 
@@ -158,16 +354,12 @@ uv sync --extra dev
 uv run pytest
 ```
 
-The tests cover the rasterizer against a brute-force reference, depth order, axis and quaternion
-conventions, sphere reconstruction and texture colours, glTF round trips, orientation recovery, rig
-utilities, the facing pair, skinning and the clip merge.
-
-On Windows (development only: CUDA torch from the cu130 index), put the venv and `third_party/` on a short
-path (`UV_PROJECT_ENVIRONMENT`, `ASSETGEN_THIRD_PARTY`), since several checkpoint paths pass the 260-character
-limit, and set `UV_SYSTEM_CERTS=1` behind a TLS-intercepting proxy. UniMate's preview renderer is skipped
-there because it uses `fcntl`.
+The tests cover the rasterizer against a brute-force reference, conventions, sphere reconstruction, glTF round trips,
+orientation recovery, rig utilities, skinning, the clip merge, loops, the character file and its schema, the
+exporters, the image backends (against a stub server) and the HTTP API. `ASSETGEN_GODOT=<godot binary>` adds the Godot
+addon on a real Godot.
 
 ## Licences
 
-Idol is Apache-2.0 and SkinTokens is MIT. UniMate's code is MIT, but its released checkpoints are
-CC BY-NC 4.0, so assets animated with them are for non-commercial use.
+Idol is Apache-2.0 and SkinTokens is MIT. UniMate's code is MIT, but its released checkpoints are CC BY-NC 4.0, so
+characters animated with them are for non-commercial use; every character file says so.
