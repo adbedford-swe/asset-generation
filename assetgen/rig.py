@@ -104,6 +104,8 @@ def predict(mesh_path, device: str = "cuda", cls: str = "articulation", seed: in
     log(f"[rig] {len(verts)} welded vertices, {len(faces)} faces")
 
     root = skintokens_dir()
+    if not (root / SKINTOKENS["checkpoint"]).exists():
+        raise SystemExit(f"SkinTokens is not set up at {root}: run `uv run assetgen setup`")
     os.chdir(root)
     sys.path.insert(0, str(root))
     _install_runtime_patches()
@@ -173,7 +175,9 @@ def main(argv=None) -> None:
     ap.add_argument("--max_joints", type=int, default=70)
     ap.add_argument("--postprocess", action="store_true", help="SkinTokens' voxel skin clean-up")
     args = ap.parse_args(argv)
+    from .device import use_device
 
+    use_device(args.device)
     out = Path(args.out).resolve()
     mesh_path = Path(args.mesh).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)

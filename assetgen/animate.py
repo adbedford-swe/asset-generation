@@ -76,8 +76,12 @@ def _env(device: str) -> dict:
     env.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
     m = re.fullmatch(r"cuda:(\d+)", device)
     if m:
-        env["CUDA_VISIBLE_DEVICES"] = m.group(1)
-        env["HIP_VISIBLE_DEVICES"] = m.group(1)
+        # One mask only: ROCm builds read HIP_VISIBLE_DEVICES, CUDA builds CUDA_VISIBLE_DEVICES.
+        from importlib.metadata import version
+
+        key = "HIP_VISIBLE_DEVICES" if "rocm" in version("torch") else "CUDA_VISIBLE_DEVICES"
+        env.pop("HIP_VISIBLE_DEVICES" if key == "CUDA_VISIBLE_DEVICES" else "CUDA_VISIBLE_DEVICES", None)
+        env[key] = m.group(1)
     env["PYTHONPATH"] = str(unimate_dir()) + os.pathsep + env.get("PYTHONPATH", "")
     return env
 
@@ -109,6 +113,8 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
         repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
         llm: dict | None = None, log=print) -> list[dict]:
     rigged, out_dir = rigged.resolve(), out_dir.resolve()
+    if not (unimate_exp_dir() / "config.json").exists():
+        raise SystemExit(f"UniMate is not set up at {unimate_dir()}: run `uv run assetgen setup`")
     env = _env(device)
     asset_dir = out_dir / "asset"
     rig = json.loads(rigged.with_suffix(".json").read_text())

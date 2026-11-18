@@ -23,11 +23,16 @@ image ──Idol──▶ 3D Gaussian splat ──▶ upright, front-facing, tex
 bash scripts/setup_rocm.sh
 ```
 
-That installs uv if it is missing and builds `.venv` from `uv.lock` (Python 3.11, torch 2.14.1+rocm7.2,
+Idol is installed from the private `adbedford-swe/idol-sdk` repository, so git on the machine needs read
+access to it. The script checks first, runs `gh auth setup-git` if `gh` is logged in, and otherwise says what
+to fix. It then installs uv if it is missing and builds `.venv` from `uv.lock` (Python 3.11, torch 2.14.1+rocm7.2,
 bpy 4.5 as a module, so no Blender install is needed). It then runs `assetgen setup` (pinned SkinTokens and
 UniMate checkouts in `third_party/`, plus their weights: about 3 GB) and `assetgen doctor`. Idol's image
 encoders (DINOv3, FLUX.2) are gated on Hugging Face: request access and run `hf auth login`, or keep the
 copies already in `~/.cache/huggingface`, which are used offline.
+
+`assetgen run` (and the web UI) also fetches the checkouts and weights itself if they are missing, so a run on
+a machine where `assetgen setup` never ran or stopped early completes the setup first.
 
 `assetgen doctor` checks the GPU, the fused attention kernels (RDNA3 needs
 `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, which every stage sets), every import, the checkouts at their
@@ -41,9 +46,22 @@ uv run assetgen run --image demon.png --out outputs/demon --height 1.9 \
              "An object swings a weapon overhead." "An object roars."
 
 uv run assetgen batch --images figures/ --out outputs --devices cuda:0,cuda:1   # one asset per GPU at a time
+uv run assetgen batch --splats outputs/ --out remeshed --from mesh --devices cuda:0,cuda:1   # <name>/splat.ply (+ input.png)
 uv run assetgen run --ply splat.ply --reference input.png --out outputs/x      # start from an existing splat
 uv run assetgen run --image demon.png --out outputs/demon --from rig --force    # redo from a stage
 ```
+
+Or from a browser:
+
+```bash
+uv run assetgen webui                    # http://127.0.0.1:7860
+uv run assetgen webui --host 0.0.0.0     # reachable from other machines on the network
+```
+
+Upload an image (or a splat and its Idol input image), list the motions and press Generate. The log streams,
+each stage's preview appears as it finishes (front view, splat against mesh, skeleton, every clip), and the
+finished asset plays in an interactive 3D viewer with a clip picker and a download link. Runs land in
+`outputs/webui/<time>-<name>/`, laid out like `assetgen run`, so the CLI can resume them.
 
 Each stage runs in its own process, so GPU memory is released between models, and logs to
 `<out>/logs/<stage>.log`. A stage is skipped when its outputs exist and it last ran with the same arguments.
@@ -68,6 +86,8 @@ the image implied, and rigging and motion both depend on the asset being upright
 The mesh stage renders the splat around the vertical axis, upright and flipped, and matches each view
 against Idol's preprocessed input image (silhouette IoU plus colour agreement, cropped to bounding boxes
 so focal length does not matter). It then refines the facing with the splat's mirror-symmetry plane. The
+character is taken to face roughly towards the camera of the input image, so use an image that shows its front
+or a three-quarter view: one taken from behind gives an asset facing backwards. The
 asset comes out Y-up, facing +Z (the glTF convention), centred and standing on y = 0. On synthetic
 inputs with known pose, facing is recovered to within 0.2 degrees from three-quarter views.
 

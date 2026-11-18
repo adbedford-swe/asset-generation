@@ -18,6 +18,20 @@ if ! command -v uv >/dev/null 2>&1; then
     fi
 fi
 
+# Idol comes from a private repository: make sure git can read it before uv tries to.
+export GIT_TERMINAL_PROMPT=0
+IDOL_REPO=https://github.com/adbedford-swe/idol-sdk
+if ! git ls-remote "$IDOL_REPO" HEAD >/dev/null 2>&1; then
+    if command -v gh >/dev/null 2>&1 && gh auth status -h github.com >/dev/null 2>&1; then
+        gh auth setup-git -h github.com
+    fi
+    if ! git ls-remote "$IDOL_REPO" HEAD >/dev/null 2>&1; then
+        echo "git cannot read $IDOL_REPO (private). Run 'gh auth login' and 'gh auth setup-git'," >&2
+        echo "or give git another credential for github.com, then rerun this script." >&2
+        exit 1
+    fi
+fi
+
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$PWD/.uv-cache}"
 df -h . | tail -1 | awk '{print "free space here: " $4}'
 

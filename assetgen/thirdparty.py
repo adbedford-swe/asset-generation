@@ -91,6 +91,35 @@ def download_weights(log=print) -> None:
         log(f"[setup] {repo}")
 
 
+def missing() -> list[str]:
+    """What a run would need from ``setup`` that is not in place yet."""
+    gaps = []
+    for spec in (SKINTOKENS, UNIMATE):
+        head = ""
+        if (spec["dir"] / ".git").exists():
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=spec["dir"], capture_output=True,
+                                  text=True).stdout.strip()
+        if head != spec["commit"]:
+            gaps.append(f"{spec['dir'].name} checkout at {spec['dir']}")
+    for f in SKINTOKENS["files"]:
+        if not (SKINTOKENS["dir"] / f).exists():
+            gaps.append(f"SkinTokens {f}")
+    if not (SKINTOKENS["dir"] / "models" / "Qwen3-0.6B" / "config.json").exists():
+        gaps.append("Qwen3-0.6B config")
+    for f in UNIMATE["files"]:
+        if not (UNIMATE["dir"] / "outputs" / f).exists():
+            gaps.append(f"UniMate {f}")
+    return gaps
+
+
+def require(log=print) -> None:
+    """Fetch whatever ``setup`` would, if any of it is missing."""
+    gaps = missing()
+    if gaps:
+        log(f"[setup] first run: fetching {', '.join(gaps)}")
+        setup(log=log)
+
+
 def setup(weights: bool = True, log=print) -> None:
     checkout(SKINTOKENS, log)
     checkout(UNIMATE, log)
