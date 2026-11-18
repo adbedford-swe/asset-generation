@@ -60,3 +60,25 @@ def test_run_fetches_missing_third_party_once(monkeypatch):
     monkeypatch.setattr(thirdparty, "missing", lambda: [])
     thirdparty.require(log=lambda *_: None)
     assert calls == ["setup"]
+
+
+def test_score_prefers_branched_symmetric_rig_over_a_chain():
+    import trimesh
+
+    from assetgen.gltf import Rig
+    from assetgen.rig import longest_chain, score_rig
+
+    box = trimesh.creation.box(extents=(1.0, 2.0, 0.6))
+    v, f = np.asarray(box.vertices), np.asarray(box.faces)
+    # hips, spine, chest, head, then left/right legs and arms, all mirrored across x = 0
+    joints = np.array([[0, 0, 0], [0, 0.3, 0], [0, 0.6, 0], [0, 0.9, 0],
+                       [0.2, -0.1, 0], [0.2, -0.6, 0], [-0.2, -0.1, 0], [-0.2, -0.6, 0],
+                       [0.35, 0.6, 0], [0.45, 0.2, 0], [-0.35, 0.6, 0], [-0.45, 0.2, 0]], float)
+    parents = np.array([-1, 0, 1, 2, 0, 4, 0, 6, 2, 8, 2, 10])
+    chain = np.c_[np.full(30, 0.1), np.linspace(-0.9, 0.9, 30), np.zeros(30)]
+    w = np.ones((len(v), 1))
+    good = score_rig(Rig(joints, parents, [f"b{i}" for i in range(12)], w), v, f)
+    bad = score_rig(Rig(chain, np.arange(-1, 29), [f"c{i}" for i in range(30)], w), v, f)
+    assert longest_chain(np.arange(-1, 29)) == 30
+    assert good["score"] > bad["score"]
+    assert good["symmetry"] < 1e-6

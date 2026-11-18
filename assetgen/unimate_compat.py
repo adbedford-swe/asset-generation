@@ -79,6 +79,15 @@ def main() -> None:
     finally:
         sys.stdout.flush()
         sys.stderr.flush()
+        if os.name == "nt":
+            # os._exit still unloads DLLs on Windows, which runs Blender's static destructors.
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            kernel32.TerminateProcess(kernel32.GetCurrentProcess(), code)
         os._exit(code)
 
 

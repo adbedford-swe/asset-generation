@@ -55,6 +55,11 @@ running.
   `assetgen setup` fetched both checkouts and all weights, and 27/27 tests passed. This turned up and fixed:
   open3d 0.20 needs glibc 2.35 (now pinned below 0.20), and bpy needs X11/GL libraries even headless
   (`setup_rocm.sh` now checks and prints the packages to install).
+- A full `assetgen run` under Linux on CPU (the Fox, through mesh, rig, motion and finalize) ending
+  in an animated `fox.glb`. It surfaced three CPU-only gaps, now fixed: SkinTokens probing the GPU name at import,
+  SkinTokens needing CPU autocast, and UniMate's config sampling on `cuda`. It also confirmed the bpy teardown fix:
+  Blender as a module reported leaked memory and then crashed (Windows) or hung (Linux, which stalled the web UI
+  before its clips appeared) at interpreter exit. Blender steps now end without that teardown.
 - `batch` with a GPU worker and a CPU worker running at once, and the web UI driven in a browser through
   every stage.
 
