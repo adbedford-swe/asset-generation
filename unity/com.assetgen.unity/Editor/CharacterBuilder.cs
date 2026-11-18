@@ -166,7 +166,6 @@ namespace Assetgen.Editor
                     animator = root.AddComponent<Animator>();
                 animator.runtimeAnimatorController = controller;
                 animator.applyRootMotion = false;
-                animator.cullingMode = AnimatorCullingMode.CullUpdateTransforms;
                 if (!root.TryGetComponent(out AssetgenCharacter character))
                     character = root.AddComponent<AssetgenCharacter>();
                 character.Definition = definition;

@@ -87,6 +87,34 @@ inside as single-window loops. Without a detectable cycle a clip loops over 3 s.
 trot have no regular gait cycle within 60 frames, so auto mode gave them 3-second loops; a rig whose motion does
 cycle gets one cycle per loop.
 
+## Engines, server and text to image (0.3.0)
+
+New in 0.3.0: `server.py` (`assetgen.server`: FastAPI under `/api/v1`, the Gradio UI mounted at `/`, one job queue
+over the devices), the `image` stage (`assetgen.imagegen`: sdcpp/A1111, OpenAI-compatible, ComfyUI, command), the
+character file (`assetgen.character`, `schema/character.schema.json`), exporters (`assetgen.export`), the Unity
+package (`unity/com.assetgen.unity`) and the Godot addon (`godot/addons/assetgen`). Finalize now also grounds the
+asset: UniMate's canonical asset is not grounded, and the merged fox stood 0.15 m below y = 0 before this.
+
+Checked on the laptop (Windows, CUDA): 73 Python tests, including the API through FastAPI's test client, the image
+backends against a stub sd-server, and the schema against a written character file. The server ran real jobs on the
+GPU: continue-from-finalize (8.5 s) and continue-from-animate with idle, walk, run and a one-shot jump (the asset the
+engine checks use), and cancel stopped a running motion stage with all of UniMate's child processes. The web UI was
+driven in a browser: candidate images from the stub backend, a finished run's viewer, clip table, locomotion blend and
+Unity/Godot downloads. The Godot addon imported that fox in Godot 4.7.2 headless and passed every check in
+`godot/tests/test_character.gd` (loop modes, AnimationTree, speed driving the blend, the skeleton moving, the one-shot
+returning to Locomotion); `tests/test_godot.py` does the same on the synthetic test character when `ASSETGEN_GODOT` is
+set. The Unity package ran in Unity 6000.3.28f1 (Personal, headless, opened and driven with the Unity CLI 1.0.1 and
+com.unity.pipeline 1.0.0): it compiles with no console errors or warnings, the `assetgen` group's ten commands
+register, and the exported fox built on import into `fox.controller` (Speed parameter; Locomotion blend tree at
+0 / 0.219 / 0.466 m/s; a state per clip with the right loop flags; the jump returning to Locomotion at 92%) and a
+prefab variant with `AssetgenCharacter`. In Play mode the bones move, `Speed` drives the blend, and the jump plays for
+its 1.97 s and hands back to Locomotion. Rebuilding keeps the controller's and prefab's GUIDs. `status`, `job`,
+`import` (by job id and by path), `generate` and `wait` were run against the server; `wait` reported the text job's
+failure at Idol (gated encoders, see below). The run turned up two fixes: Animator culling was CullUpdateTransforms,
+which never moves the bones without a camera (now Unity's default, AlwaysAnimate), and a method the CLI commands use
+was internal to another assembly. Not checked: a real stable-diffusion.cpp server (only the stub that speaks its API), ComfyUI, and the text stage
+feeding real Idol (Idol's encoders are not on the laptop).
+
 ## First thing to do on the ROCm box
 
 ```bash

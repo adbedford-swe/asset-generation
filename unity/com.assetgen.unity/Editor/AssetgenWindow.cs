@@ -394,7 +394,7 @@ namespace Assetgen.Editor
             EditorGUIUtility.PingObject(asset);
         }
 
-        internal static GameObject AddToScene(string prefabPath, Vector3? position = null)
+        public static GameObject AddToScene(string prefabPath, Vector3? position = null)
         {
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
             if (prefab == null)

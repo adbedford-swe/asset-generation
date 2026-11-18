@@ -18,6 +18,8 @@
     "url": "https://github.com/adbedford-swe/asset-generation"
   },
   "dependencies": {
-    "com.unity.cloud.gltfast": "6.21.0"
+    "com.unity.cloud.gltfast": "6.21.0",
+    "com.unity.modules.animation": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0"
   }
 }

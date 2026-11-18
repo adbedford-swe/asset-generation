@@ -158,12 +158,13 @@ namespace Assetgen.Editor
             CommandContext cmd,
             [CliArg("source", "A job id, or a path on disk", Required = true)] string source)
         {
-            string prefab;
             if (File.Exists(source) || Directory.Exists(source))
-                prefab = CharacterImport.FromPath(source);
-            else
-                prefab = await CharacterImport.FromJobAsync(source, new AssetgenClient(), cmd.CancellationToken);
-            WriteCharacter(cmd, null, prefab);
+            {
+                WriteCharacter(cmd, null, CharacterImport.FromPath(source));
+                return ExitCode.Success;
+            }
+            var prefab = await CharacterImport.FromJobAsync(source, new AssetgenClient(), cmd.CancellationToken);
+            WriteCharacter(cmd, source, prefab);
             return ExitCode.Success;
         }
 

@@ -136,7 +136,8 @@ def test_install_into_unity_project(finished, tmp_path):
     deps[export.UNITY_PACKAGE] = "1.2.3"  # a pinned version the user chose stays
     (project / "Packages" / "manifest.json").write_text(json.dumps({"dependencies": deps}))
     export.install(finished, "unity", project, log=lambda *_: None)
-    assert json.loads((project / "Packages" / "manifest.json").read_text())["dependencies"][export.UNITY_PACKAGE] == "1.2.3"
+    deps = json.loads((project / "Packages" / "manifest.json").read_text())["dependencies"]
+    assert deps[export.UNITY_PACKAGE] == "1.2.3"
 
 
 def test_install_into_godot_project(finished, tmp_path):
