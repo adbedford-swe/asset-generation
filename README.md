@@ -31,6 +31,9 @@ UniMate checkouts in `third_party/`, plus their weights: about 3 GB) and `assetg
 encoders (DINOv3, FLUX.2) are gated on Hugging Face: request access and run `hf auth login`, or keep the
 copies already in `~/.cache/huggingface`, which are used offline.
 
+`assetgen run` (and the web UI) also fetches the checkouts and weights itself if they are missing, so a run on
+a machine where `assetgen setup` never ran or stopped early completes the setup first.
+
 `assetgen doctor` checks the GPU, the fused attention kernels (RDNA3 needs
 `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, which every stage sets), every import, the checkouts at their
 pinned commits, the weights and free disk space.

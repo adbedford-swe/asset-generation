@@ -113,6 +113,8 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
         repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
         llm: dict | None = None, log=print) -> list[dict]:
     rigged, out_dir = rigged.resolve(), out_dir.resolve()
+    if not (unimate_exp_dir() / "config.json").exists():
+        raise SystemExit(f"UniMate is not set up at {unimate_dir()}: run `uv run assetgen setup`")
     env = _env(device)
     asset_dir = out_dir / "asset"
     rig = json.loads(rigged.with_suffix(".json").read_text())

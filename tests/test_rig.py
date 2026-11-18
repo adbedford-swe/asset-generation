@@ -48,3 +48,15 @@ def test_facing_pair_falls_back_to_head_tail():
 
 def test_clip_name():
     assert clip_name("An object walks forward.") == "walks_forward"
+
+
+def test_run_fetches_missing_third_party_once(monkeypatch):
+    from assetgen import thirdparty
+
+    calls = []
+    monkeypatch.setattr(thirdparty, "setup", lambda log=print: calls.append("setup"))
+    monkeypatch.setattr(thirdparty, "missing", lambda: ["SkinTokens checkout"])
+    thirdparty.require(log=lambda *_: None)
+    monkeypatch.setattr(thirdparty, "missing", lambda: [])
+    thirdparty.require(log=lambda *_: None)
+    assert calls == ["setup"]

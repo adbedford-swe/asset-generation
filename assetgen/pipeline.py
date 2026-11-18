@@ -104,6 +104,11 @@ def run(o: Options, start: str | None = None, stop: str | None = None, force: bo
     if stop:
         order = order[:order.index(stop) + 1]
 
+    if any(s in order for s in ("rig", "animate")):
+        from .thirdparty import require
+
+        require(log)
+
     rerun = force
     for stage in order:
         args, outputs = cmds[stage]
