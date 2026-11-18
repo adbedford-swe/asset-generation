@@ -42,7 +42,12 @@ running.
 - The whole chain on the Fox (quadruped): mesh → SkinTokens (29 joints: spine, neck, head, ears, four legs,
   tail) → UniMate (facing pair = what UniMate's own rules label Right/Left Thigh) → walk and jump clips →
   merged `fox.glb` with named clips, checked by evaluating the skinning per frame (`assetgen.gltf_anim`).
-- An end-to-end `assetgen run` on CesiumMan (humanoid) through the orchestrator; see the PR for its result.
+- `assetgen run` end to end on CesiumMan (humanoid) through the orchestrator, including a resume after an
+  interrupted run (finished stages reported up to date). Result: 22-joint humanoid skeleton (hips, spine,
+  neck, head, clavicles, arms, legs, toes), `walks_forward` and `waves_with_its_right` clips (the raised arm
+  is the character's right), scaled to 1.8 m. Stage times on the 4 GB laptop GPU: mesh about 100 s after the
+  profiling fixes (645 s before them), rig 120 s (2 beams), motion 325 s for two clips, finalize 13 s. Most
+  of the motion time is bpy importing and exporting each clip, which is CPU-bound and costs the same on any GPU.
 
 Not verified anywhere: the `generate` stage (Idol's gated encoders aren't on the laptop; it calls the same
 Idol API the earlier `gen_idol.py` validated on the ROCm box), `batch` across two GPUs, and

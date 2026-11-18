@@ -123,8 +123,8 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
     if llm:
         pre += ["--model", llm["model"], "--backend", "openai", "--base_url", llm["base_url"],
                 "--api_key", llm.get("api_key", "none")]
-    if sys.platform == "win32":
-        pre.append("--no_preview")  # the preview renderer locks files with fcntl
+    # The pipeline renders its own previews; UniMate's needs Blender rendering and fcntl.
+    pre.append("--no_preview")
     _run(pre, env, log, expect=asset_dir / "summary.json", blender=True)
     summary = json.loads((asset_dir / "summary.json").read_text())
     if not summary.get("canonical_glb"):

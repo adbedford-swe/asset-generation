@@ -29,8 +29,8 @@ def doctor() -> bool:
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             p = torch.cuda.get_device_properties(i)
-            arch = getattr(p, "gcnArchName", "")
-            check(f"cuda:{i}", True, f"{p.name} {arch} {p.total_memory / 2**30:.1f} GB")
+            arch = f" {p.gcnArchName}" if hip else ""
+            check(f"cuda:{i}", True, f"{p.name}{arch} {p.total_memory / 2**30:.1f} GB")
         q = torch.randn(1, 8, 256, 64, device="cuda", dtype=torch.float16)
         try:
             from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -61,20 +61,14 @@ def doctor() -> bool:
     for f in UNIMATE["files"]:
         check(f"UniMate {f.split('/')[-1]}", (UNIMATE["dir"] / "outputs" / f).exists())
 
-    from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import LocalEntryNotFoundError
+    from .generate import ENCODERS, cached_snapshot
 
-    from .generate import ENCODERS
-
-    for repo in [*TEXT_MODELS, "speridlabs/idol", *ENCODERS.values()]:
-        try:
-            snapshot_download(repo, local_files_only=True,
-                              allow_patterns=["vae/*"] if "FLUX" in repo else None)
-            check(f"cached {repo}", True)
-        except LocalEntryNotFoundError:
-            gated = repo in ENCODERS.values()
-            check(f"cached {repo}", False, "gated: request access and `hf auth login`" if gated else
-                  "downloads on first use", fatal=False)
+    for repo, key in [*[(r, "config.json") for r in TEXT_MODELS], ("speridlabs/idol", "config.json"),
+                      *ENCODERS.values()]:
+        gated = (repo, key) in ENCODERS.values()
+        found = cached_snapshot(repo, key) is not None
+        check(f"cached {repo}", found, "" if found else
+              ("gated: request access and `hf auth login`" if gated else "downloads on first use"), fatal=False)
 
     free = shutil.disk_usage(unimate_exp_dir().parent if unimate_exp_dir().parent.exists() else ".").free / 2**30
     check("disk space", free > 10, f"{free:.0f} GB free", fatal=False)

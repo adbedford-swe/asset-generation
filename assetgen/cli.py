@@ -130,6 +130,10 @@ def cmd_synth(a) -> None:
 
 
 def main(argv=None) -> None:
+    # Stage output is relayed verbatim; never let a console code page turn a character into a crash.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="assetgen", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 

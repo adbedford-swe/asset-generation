@@ -12,11 +12,12 @@ from .splats import Camera, Gaussians, make_camera, render
 
 def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_colors=None,
                 background=(1.0, 1.0, 1.0), shade: bool = True, chunk: int = 1 << 20):
-    """Z-buffered rasterization. Returns (rgb (H, W, 3), mask (H, W)) as float tensors on CPU."""
-    V = torch.as_tensor(np.asarray(vertices), dtype=torch.float32)
-    Fc = torch.as_tensor(np.asarray(faces), dtype=torch.long)
+    """Z-buffered rasterization (on the GPU when there is one). Returns (rgb (H, W, 3), mask (H, W)) on CPU."""
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    V = torch.as_tensor(np.asarray(vertices), dtype=torch.float32, device=dev)
+    Fc = torch.as_tensor(np.asarray(faces), dtype=torch.long, device=dev)
     H, W = cam.height, cam.width
-    R, t = cam.view[:3, :3], cam.view[:3, 3]
+    R, t = cam.view[:3, :3].to(dev), cam.view[:3, 3].to(dev)
     pc = V @ R.T + t
     z = pc[:, 2].clamp_min(1e-6)
     sx = cam.fx * pc[:, 0] / z + cam.cx
@@ -25,9 +26,9 @@ def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_col
     tz = pc[:, 2][Fc]
     keep = (tz > 1e-3).all(1)
 
-    zbuf = torch.full((H * W,), float("inf"))
-    fbuf = torch.full((H * W,), -1, dtype=torch.long)
-    bbuf = torch.zeros(H * W, 3)
+    zbuf = torch.full((H * W,), float("inf"), device=dev)
+    fbuf = torch.full((H * W,), -1, dtype=torch.long, device=dev)
+    bbuf = torch.zeros(H * W, 3, device=dev)
     idx = torch.nonzero(keep).squeeze(1)
     x0 = tri[idx, :, 0].min(1).values.floor().clamp(0, W - 1).long()
     x1 = tri[idx, :, 0].max(1).values.ceil().clamp(0, W - 1).long()
@@ -37,13 +38,13 @@ def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_col
     count = nx * (y1 - y0 + 1)
     start_all = torch.cumsum(count, 0) - count
     # Process faces in groups whose pixel candidates fit in `chunk`.
-    bounds = torch.searchsorted(start_all, torch.arange(0, int(count.sum()) + chunk, chunk))
+    bounds = torch.searchsorted(start_all, torch.arange(0, int(count.sum()) + chunk, chunk, device=dev))
     for a, b in zip(bounds[:-1].tolist(), bounds[1:].tolist()):
         if b <= a:
             continue
         c = count[a:b]
-        fid = torch.repeat_interleave(torch.arange(a, b), c)
-        local = torch.arange(len(fid)) - (torch.cumsum(c, 0) - c)[fid - a]
+        fid = torch.repeat_interleave(torch.arange(a, b, device=dev), c)
+        local = torch.arange(len(fid), device=dev) - (torch.cumsum(c, 0) - c)[fid - a]
         px = (x0[fid] + local % nx[fid]).float() + 0.5
         py = (y0[fid] + local // nx[fid]).float() + 0.5
         f = idx[fid]
@@ -67,26 +68,26 @@ def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_col
         bbuf[pix[win]] = bw
 
     mask = fbuf >= 0
-    rgb = torch.tensor(background, dtype=torch.float32).repeat(H * W, 1)
+    rgb = torch.tensor(background, dtype=torch.float32, device=dev).repeat(H * W, 1)
     hit = torch.nonzero(mask).squeeze(1)
     f = Fc[fbuf[hit]]
     w = bbuf[hit]
     if texture is not None and uvs is not None:
-        UV = torch.as_tensor(np.asarray(uvs), dtype=torch.float32)
+        UV = torch.as_tensor(np.asarray(uvs), dtype=torch.float32, device=dev)
         uv = (UV[f] * w[..., None]).sum(1)
-        tex = torch.as_tensor(np.asarray(texture), dtype=torch.float32) / 255.0
+        tex = torch.as_tensor(np.asarray(texture), dtype=torch.float32, device=dev) / 255.0
         grid = (uv * 2 - 1).view(1, 1, -1, 2)  # glTF uv: v down, matches image rows
         col = F.grid_sample(tex.permute(2, 0, 1)[None], grid, mode="bilinear", align_corners=False)[0, :, 0].T
     elif vertex_colors is not None:
-        VC = torch.as_tensor(np.asarray(vertex_colors), dtype=torch.float32)
+        VC = torch.as_tensor(np.asarray(vertex_colors), dtype=torch.float32, device=dev)
         col = (VC[f] * w[..., None]).sum(1)
     else:
-        col = torch.full((len(hit), 3), 0.8)
+        col = torch.full((len(hit), 3), 0.8, device=dev)
     if shade and texture is None and vertex_colors is None:
         n = F.normalize(torch.linalg.cross(V[f[:, 1]] - V[f[:, 0]], V[f[:, 2]] - V[f[:, 0]]), dim=-1)
         col = col * (0.35 + 0.65 * (n @ R[2]).abs()[:, None])
     rgb[hit] = col
-    return rgb.view(H, W, 3), mask.view(H, W).float()
+    return rgb.view(H, W, 3).cpu(), mask.view(H, W).float().cpu()
 
 
 def turntable_cameras(center, radius: float, n: int = 6, size: int = 384, elevation_deg: float = 10.0,

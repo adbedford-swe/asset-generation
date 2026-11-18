@@ -176,6 +176,7 @@ def unwrap(vertices: np.ndarray, faces: np.ndarray, texture_size: int):
     pack.resolution = texture_size
     pack.padding = 4
     pack.bilinear = True
+    pack.blockAlign = True
     atlas.generate(xatlas.ChartOptions(), pack)
     vmap, new_faces, uvs = atlas[0]
     return vmap.astype(np.int64), new_faces.astype(np.int64), uvs.astype(np.float32)

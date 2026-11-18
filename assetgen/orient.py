@@ -92,8 +92,20 @@ def _view_score(g: Gaussians, yaw: float, pitch: float, center, radius, ref) -> 
     return iou - colour
 
 
+def thinned(g: Gaussians, keep: int = 60000, seed: int = 0) -> Gaussians:
+    """A random subset for low-resolution silhouette matching, enlarged to cover the same area."""
+    if len(g) <= keep:
+        return g
+    gen = torch.Generator().manual_seed(seed)
+    idx = torch.randperm(len(g), generator=gen)[:keep].to(g.device)
+    sub = g.subset(idx)
+    sub.scales = sub.scales * math.sqrt(len(g) / keep)
+    return sub
+
+
 def find_input_camera(g: Gaussians, ref, pitch_deg: float | None = None, log=print):
     """Search up/down and yaw for the view that reproduces the input image."""
+    g = thinned(g)
     lo = torch.quantile(g.means.cpu(), 0.01, dim=0)
     hi = torch.quantile(g.means.cpu(), 0.99, dim=0)
     center = ((lo + hi) / 2).to(g.device)

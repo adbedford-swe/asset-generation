@@ -8,23 +8,23 @@ from pathlib import Path
 # Idol's image encoders are gated on the Hub. When they are already in the local
 # cache, pass the snapshot folders: Idol only checks gated access for repo ids.
 ENCODERS = {
-    "dinov3": "facebook/dinov3-vith16plus-pretrain-lvd1689m",
-    "flux2_vae": "black-forest-labs/FLUX.2-dev",
+    "dinov3": ("facebook/dinov3-vith16plus-pretrain-lvd1689m", "config.json"),
+    "flux2_vae": ("black-forest-labs/FLUX.2-dev", "vae/config.json"),
 }
 
 
-def resolve_encoders() -> dict:
-    from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import LocalEntryNotFoundError
+def cached_snapshot(repo: str, key_file: str) -> str | None:
+    """The local snapshot folder holding ``key_file`` of ``repo``, or None if it is not cached."""
+    from huggingface_hub import try_to_load_from_cache
 
-    resolved = {}
-    for key, repo in ENCODERS.items():
-        try:
-            allow = ["vae/*"] if key == "flux2_vae" else None
-            resolved[key] = snapshot_download(repo, local_files_only=True, allow_patterns=allow)
-        except LocalEntryNotFoundError:
-            resolved[key] = repo
-    return resolved
+    path = try_to_load_from_cache(repo, key_file)
+    if not isinstance(path, str):
+        return None
+    return str(Path(path).parents[len(Path(key_file).parts) - 1])
+
+
+def resolve_encoders() -> dict:
+    return {key: cached_snapshot(repo, f) or repo for key, (repo, f) in ENCODERS.items()}
 
 
 def generate(image: str, out_dir: Path, device: str = "cuda", mode: str = "synthetic", seed: int = 42,

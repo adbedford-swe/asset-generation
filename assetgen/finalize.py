@@ -128,7 +128,14 @@ def main(argv=None) -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--height", type=float, default=None)
     a = ap.parse_args(argv)
-    merge_clips(json.loads(Path(a.clips).read_text()), Path(a.out), a.height)
+    out = Path(a.out)
+    merge_clips(json.loads(Path(a.clips).read_text()), out, a.height)
+    from PIL import Image
+
+    from .gltf_anim import contact_sheet
+
+    Image.fromarray(contact_sheet(out)).save(out.with_suffix(".png"))
+    print(f"[finalize] clip contact sheet: {out.with_suffix('.png')}")
 
 
 if __name__ == "__main__":

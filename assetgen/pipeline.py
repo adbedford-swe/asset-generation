@@ -88,6 +88,7 @@ def child_env() -> dict:
     env.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
     env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     return env
 
 

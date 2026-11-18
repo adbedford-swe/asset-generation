@@ -142,6 +142,6 @@ def contact_sheet(path, frames: int = 6, size: int = 256, yaw_deg: float = 35.0)
         y = math.radians(yaw_deg)
         eye = center + radius * torch.tensor([math.sin(y) * 0.95, 0.3, math.cos(y) * 0.95])
         cam = make_camera(eye, center, 30.0, size)
-        row = [render_mesh(p, g.faces, cam, g.uvs, g.texture)[0].numpy() for p in poses]
+        row = [render_mesh(p, g.faces, cam, g.uvs, g.texture, background=(0.86, 0.87, 0.9))[0].numpy() for p in poses]
         rows.append(np.concatenate(row, axis=1))
     return (np.concatenate(rows, axis=0) * 255).astype(np.uint8)
