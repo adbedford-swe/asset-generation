@@ -6,6 +6,7 @@
   assetgen run --ply splat.ply --reference input.png --out outputs/x --from rig
   assetgen batch --images figs/ --out outputs --devices cuda:0,cuda:1
   assetgen batch --splats splats/ --out outputs --devices cuda:0,cuda:1
+  assetgen webui [--host 0.0.0.0]                       browser front end
   assetgen synth --mesh Fox.glb --out testdata/fox      (Idol-like test input from a mesh)
 """
 from __future__ import annotations
@@ -64,15 +65,24 @@ def cmd_run(a) -> None:
         print(f"done: {final}")
 
 
+def _splat_folder(item: Path) -> Path | None:
+    """<item>/splat.ply, or <item>/0_splat/splat.ply from an earlier run."""
+    for folder in (item, item / "0_splat"):
+        if (folder / "splat.ply").exists():
+            return folder
+    return None
+
+
 def _batch_worker(queue, device, args, out_root, results):
     while True:
         try:
             item = queue.get_nowait()
         except Exception:
             return
-        if item.is_dir():  # a splat folder: splat.ply, and input.png when there is one
-            ref = item / "input.png"
-            o = _options(args, out_root / item.name, None, item / "splat.ply", ref if ref.exists() else None, device)
+        if item.is_dir():  # a splat folder, or an earlier run's output folder
+            folder = _splat_folder(item)
+            ref = folder / "input.png"
+            o = _options(args, out_root / item.name, None, folder / "splat.ply", ref if ref.exists() else None, device)
             o.name = args.name or item.name
         else:
             o = _options(args, out_root / item.stem, item, None, None, device)
@@ -92,7 +102,7 @@ def cmd_batch(a) -> None:
     if a.images:
         items = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS)
     else:
-        items = sorted(p for p in Path(a.splats).iterdir() if (p / "splat.ply").exists())
+        items = sorted(p for p in Path(a.splats).iterdir() if p.is_dir() and _splat_folder(p))
     if not items:
         raise SystemExit(f"nothing to do in {a.images or a.splats}")
     q = queue.Queue()
@@ -158,7 +168,8 @@ def main(argv=None) -> None:
 
     b = sub.add_parser("batch", help="a folder of images (or of splat folders), shared among GPUs")
     b.add_argument("--images", default=None)
-    b.add_argument("--splats", default=None, help="folder of <name>/splat.ply (+ input.png), e.g. earlier runs")
+    b.add_argument("--splats", default=None,
+                   help="folder of <name>/splat.ply (+ input.png), or of earlier runs' output folders")
     b.add_argument("--out", required=True)
     b.add_argument("--devices", default="cuda:0", help="comma-separated, e.g. cuda:0,cuda:1")
     _add_run_options(b)
@@ -167,6 +178,15 @@ def main(argv=None) -> None:
     s = sub.add_parser("setup", help="fetch pinned SkinTokens/UniMate checkouts and model weights")
     s.add_argument("--no-weights", action="store_true")
     s.set_defaults(func=cmd_setup)
+
+    w = sub.add_parser("webui", help="browser front end")
+    w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to reach it from other machines")
+    w.add_argument("--port", type=int, default=7860)
+    w.add_argument("--device", default=None)
+    w.add_argument("--concurrency", type=int, default=1, help="runs at once (one per GPU at most)")
+    w.set_defaults(func=lambda a: __import__("assetgen.webui", fromlist=["main"]).main(
+        ["--host", a.host, "--port", str(a.port), "--concurrency", str(a.concurrency),
+         *(["--device", a.device] if a.device else [])]))
 
     d = sub.add_parser("doctor", help="check the environment")
     d.set_defaults(func=cmd_doctor)

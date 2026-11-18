@@ -53,6 +53,8 @@ dependencies = [
     "tyro>=0.9",
     "rich>=13",
     "loguru>=0.7",
+    # Web UI
+    "gradio>=6.0,<7",
 ]
 
 [project.optional-dependencies]
