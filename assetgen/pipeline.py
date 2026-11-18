@@ -39,6 +39,7 @@ class Options:
     height: float | None = None
     rig_class: str | None = None
     num_beams: int = 10
+    rig_candidates: int = 3
     skin_postprocess: bool = False
     mesh_args: list[str] = field(default_factory=list)
     llm_base_url: str | None = None
@@ -60,7 +61,7 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
         mesh += ["--reference", reference]
     cmds["mesh"] = (mesh, [out / "1_mesh" / "mesh.glb"])
     rig = ["assetgen.rig", "--mesh", out / "1_mesh" / "mesh.glb", "--out", out / "2_rig" / "rigged.glb",
-           "--device", o.device, "--seed", o.seed, "--num_beams", o.num_beams]
+           "--device", o.device, "--seed", o.seed, "--num_beams", o.num_beams, "--candidates", o.rig_candidates]
     if o.rig_class:
         rig += ["--cls", o.rig_class]
     if o.skin_postprocess:

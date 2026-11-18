@@ -30,6 +30,7 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--height", type=float, default=None, help="final asset height in metres")
     ap.add_argument("--rig-class", default=None, help="force a SkinTokens rig template (e.g. mixamo, vroid)")
     ap.add_argument("--num-beams", type=int, default=10, help="SkinTokens beam search width")
+    ap.add_argument("--rig-candidates", type=int, default=3, help="rigs sampled per asset; the most plausible is kept")
     ap.add_argument("--skin-postprocess", action="store_true", help="SkinTokens voxel skin clean-up")
     ap.add_argument("--cfg-scale", type=float, default=None, help="UniMate prompt strength (default 3)")
     ap.add_argument("--llm-base-url", default=None, help="OpenAI-compatible endpoint (e.g. llama.cpp) for joint labels")
@@ -53,7 +54,7 @@ def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path
     stem = (image or ply).stem
     return Options(out=out, image=image, ply=ply, reference=reference, name=a.name or stem.replace(" ", "_"),
                    device=device, mode=a.mode, seed=a.seed, prompts=a.prompt, repetitions=a.repetitions,
-                   height=a.height, rig_class=a.rig_class, num_beams=a.num_beams,
+                   height=a.height, rig_class=a.rig_class, num_beams=a.num_beams, rig_candidates=a.rig_candidates,
                    skin_postprocess=a.skin_postprocess, mesh_args=mesh_args, llm_base_url=a.llm_base_url,
                    llm_model=a.llm_model, cfg_scale=a.cfg_scale)
 

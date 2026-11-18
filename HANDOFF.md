@@ -49,8 +49,22 @@ running.
   profiling fixes (645 s before them), rig 120 s (2 beams), motion 325 s for two clips, finalize 13 s. Most
   of the motion time is bpy importing and exporting each clip, which is CPU-bound and costs the same on any GPU.
 
-Not verified anywhere: the `generate` stage (Idol's gated encoders aren't on the laptop; it calls the same
-Idol API the earlier `gen_idol.py` validated on the ROCm box), `batch` across two GPUs, and
+- Linux (Ubuntu 20.04 under WSL2 on the laptop, no GPU): `setup_rocm.sh` resolved and built the whole lock,
+  including the private Idol package (GitHub credentials needed). ROCm torch 2.14.1 (HIP 7.2) installed: the
+  6.2 GB wheel was fetched separately because the office proxy kept dropping it, and its hash matched `uv.lock`.
+  `assetgen setup` fetched both checkouts and all weights, and 27/27 tests passed. This turned up and fixed:
+  open3d 0.20 needs glibc 2.35 (now pinned below 0.20), and bpy needs X11/GL libraries even headless
+  (`setup_rocm.sh` now checks and prints the packages to install).
+- A full `assetgen run` under Linux on CPU (the Fox, through mesh, rig, motion and finalize) ending
+  in an animated `fox.glb`. It surfaced three CPU-only gaps, now fixed: SkinTokens probing the GPU name at import,
+  SkinTokens needing CPU autocast, and UniMate's config sampling on `cuda`. It also confirmed the bpy teardown fix:
+  Blender as a module reported leaked memory and then crashed (Windows) or hung (Linux, which stalled the web UI
+  before its clips appeared) at interpreter exit. Blender steps now end without that teardown.
+- `batch` with a GPU worker and a CPU worker running at once, and the web UI driven in a browser through
+  every stage.
+
+Not verified anywhere: the `generate` stage against real Idol (Idol's gated encoders aren't on the laptop; its
+calls are checked against Idol's API and tested with a stub), two real GPUs at once, any AMD GPU kernel, and
 `--llm-base-url` labelling.
 
 ## First thing to do on the ROCm box

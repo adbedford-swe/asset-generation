@@ -23,6 +23,9 @@ import numpy as np
 
 from .thirdparty import unimate_dir, unimate_exp_dir
 
+# One UniMate step (preprocess, sampling, or driving one clip) never needs this long.
+STEP_TIMEOUT = int(os.environ.get("ASSETGEN_STEP_TIMEOUT", 3600))
+
 DEFAULT_PROMPTS = [
     "An object stands idle and breathes.",
     "An object walks forward.",
@@ -59,7 +62,7 @@ def facing_pair(joints: np.ndarray, parents: np.ndarray, names: list[str]):
             pa, pb = joints[a], joints[b]
             sep = pb[0] - pa[0]
             mirror = abs(pa[0] + pb[0]) + abs(pa[1] - pb[1]) + abs(pa[2] - pb[2])
-            if sep < 0.08 * size or mirror > 0.1 * sep:
+            if sep < 0.08 * size or mirror > 0.3 * sep:
                 continue
             score = sep / size - 0.08 * (depth[a] + depth[b]) - mirror / size
             score += 0.05 * ((children[a] > 0) + (children[b] > 0))
@@ -92,8 +95,13 @@ def _run(args: list[str], env: dict, log=print, expect: Path | None = None, blen
     as success."""
     log("[animate] $ " + " ".join(str(a) for a in args))
     started = time.time()
-    prefix = ["-m", "assetgen.unimate_compat"] if blender else []
-    code = subprocess.run([sys.executable, *prefix, *map(str, args)], cwd=unimate_dir(), env=env).returncode
+    prefix = ["-m", "assetgen.unimate_compat", *(["--blender"] if blender else [])]
+    try:
+        code = subprocess.run([sys.executable, *prefix, *map(str, args)], cwd=unimate_dir(), env=env,
+                              timeout=STEP_TIMEOUT).returncode
+    except subprocess.TimeoutExpired:
+        code = -1
+        log(f"[animate] gave up after {STEP_TIMEOUT}s")
     if code == 0:
         return
     if expect is not None and expect.exists() and expect.stat().st_mtime >= started - 1:

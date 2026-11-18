@@ -36,5 +36,15 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$PWD/.uv-cache}"
 df -h . | tail -1 | awk '{print "free space here: " $4}'
 
 uv sync --frozen --extra dev
+
+# bpy (Blender as a module, used by the motion stage) needs a few X11/GL libraries even headless.
+if ! err=$(uv run --no-sync python -c "import bpy" 2>&1); then
+    echo "bpy cannot load: $(echo "$err" | tail -1)" >&2
+    echo "Install Blender's runtime libraries, then rerun this script:" >&2
+    echo "  Debian/Ubuntu: sudo apt install libxkbcommon0 libxrender1 libxxf86vm1 libxfixes3 libxi6 libsm6 libgl1 libegl1" >&2
+    echo "  Fedora:        sudo dnf install libxkbcommon libXrender libXxf86vm libXfixes libXi libSM mesa-libGL mesa-libEGL" >&2
+    echo "  Arch:          sudo pacman -S libxkbcommon libxrender libxxf86vm libxfixes libxi libsm mesa" >&2
+    exit 1
+fi
 uv run assetgen setup
 uv run assetgen doctor
