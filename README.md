@@ -1,5 +1,5 @@
-<!-- Header: replace docs/header.svg with docs/header.gif, the web UI and Unity side by side. -->
-<p align="center"><img src="docs/header.svg" alt="assetgen: a sentence in, an animated character in Unity" width="100%"></p>
+<!-- Header: docs/header.gif, rendered by scripts/make_header.py from a finished run. A recording of the web UI and Unity side by side can replace it. -->
+<p align="center"><img src="docs/header.gif" alt="assetgen: one picture in, a rigged character with looping clips out" width="100%"></p>
 
 <h1 align="center">assetgen</h1>
 
