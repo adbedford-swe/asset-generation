@@ -56,7 +56,7 @@ in the project, the package adds an `assetgen` command group to the running Edit
 unity command assetgen status
 unity command assetgen generate --prompt "a goblin shaman with a lantern" \
     --motions '["An object stands idle.","An object walks forward.","An object casts a spell. [once]"]' \
-    --wait --timeout 1800
+    --wait true --timeout 1800
 unity command assetgen spawn --character a_goblin_shaman_with_a_lantern --position 0,0,2
 unity command editor.playmode start
 unity command assetgen play --target a_goblin_shaman_with_a_lantern --speed 0.5
