@@ -81,7 +81,7 @@ A looping clip's last frame is its first, and the motion through the seam is as 
 By default loops play in place: a walk's forward travel is removed, and the speed it walked at is stored in the
 clip's glTF `extras` (`root_velocity`, m/s, with `loop` and `loop_frames`) so game code can move the character
 to match. `--root-motion` keeps the travel instead, for engines that drive movement from the root bone.
-`--loop off` turns looping off; `--loop 40` forces a 40-frame loop (30 fps). Finalize measures every seam and
+`--loop off` turns looping off; `--loop 120` makes 120-frame (4 s) loops, any length up to 600 frames. Finalize measures every seam and
 writes it, with the clips' metadata, to `<name>.json`.
 
 Useful options: `--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3,
@@ -131,17 +131,21 @@ were left on no action slot (the 4.4 animation system), which exported clips wit
 `assetgen.unimate_compat` assigns the slot. bpy can also crash while the interpreter shuts down after its
 files are written; the stage checks for the files instead of trusting that exit code.
 
-**Loops.** UniMate's flow is linear, `x_t = (1-t) noise + t x1`, so each sampling step can be written as
-"predict the clean motion, then move to the next noise level". `assetgen.motion_sampler` makes the predicted
-clean motion periodic before each move: frames t, t+L, t+2L of the 60-frame window are replaced by their mean.
-All of UniMate's per-frame features are independent of world position (root-relative joint positions, local
-rotations, facing-frame velocities, root height), so equal features mean the same pose moving the same way,
-while the root still travels. The model shapes the whole motion around the constraint at every step, so the
-loop is generated, not blended: at the end the window is exactly periodic and frames 0..L play as a loop whose
-seam matches in position, velocity and acceleration. L comes from the motion itself: a quick first pass reveals
-its cycle (autocorrelation of the joints' features) and L is the largest whole number of cycles that fits, or the
-window less a margin for motions without a cycle. On a test fox, looped clips close to within 1e-7 of the asset's
-size with a seam smoother than 95% of the clip's other frames; an unlooped clip misses by a tenth of its size.
+**Loops.** UniMate denoises one 60-frame window at a time. `assetgen.motion_sampler` treats each loop as a
+ring of L frames, of any length, covered by overlapping 60-frame windows that wrap around its end. Every
+sampling step runs all windows of all clips through the model as one batch, blends each frame's velocity over
+the windows covering it (weighted towards window centres) and advances the ring; the windows shift every step
+so no window edge settles into the motion. This is the MultiDiffusion idea on a circular time axis. A ring has
+no ends, so the clip is periodic by construction: there is no seam to blend, and the frames either side of the
+wrap are as continuous as any other neighbours. A ring shorter than a window simply wraps within it. All of
+UniMate's per-frame features are independent of world position (root-relative joint positions, local rotations,
+facing-frame velocities, root height), so equal features mean the same pose moving the same way while the root
+still travels. With `--loop auto` (the default) a quick free pass over 120 frames reveals the motion's cycle
+(autocorrelation of its standardised joint features, first strong peak) and the loop is one cycle, or the fewest
+whole cycles lasting at least 20 frames; a motion without a cycle loops over 3 seconds. On a test fox, 3- and
+4-second loops close to within 3e-7 of the asset's size with seams 0.5-0.8x as rough as the rest of the clip,
+and the 4-second rings are as smooth inside (median and 99th-percentile frame-to-frame change) as loops made in
+a single window, so the windows leave no trace.
 
 **Finalize.** Every clip drives the same canonical asset, so the clips' animations are merged into one
 file by node name and named after their prompts. Looping clips are made to loop in place (or keep their root

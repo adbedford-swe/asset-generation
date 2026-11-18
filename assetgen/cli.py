@@ -28,7 +28,8 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--prompt", nargs="+", default=[],
                     help='motion prompts, each "An object <does one thing>."; each loops unless it ends in "[once]"')
     ap.add_argument("--loop", default="auto",
-                    help="auto: loop length from each motion's own cycle; off; or a loop length in frames (30 fps)")
+                    help="auto: loop length from each motion's own cycle (3 s without one); off; or a loop "
+                         "length in frames at 30 fps, any length up to 600")
     ap.add_argument("--root-motion", action="store_true",
                     help="keep looping clips' root travel (default: they loop in place, speed in the clip's extras)")
     ap.add_argument("--flow-steps", type=int, default=None, help="motion sampler steps (default 32)")
