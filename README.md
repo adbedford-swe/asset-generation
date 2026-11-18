@@ -1,4 +1,4 @@
-<!-- Header: docs/header.gif, rendered by scripts/make_header.py from a finished run. A recording of the web UI and Unity side by side can replace it. -->
+<!-- Header: docs/header.gif. scripts/make_header.py renders it from a finished run; scripts/compose_header.py webui.mp4 unity.mp4 makes it from screen recordings of the web UI and Unity, side by side. -->
 <p align="center"><img src="docs/header.gif" alt="assetgen: one picture in, a rigged character with looping clips out" width="100%"></p>
 
 <h1 align="center">assetgen</h1>
