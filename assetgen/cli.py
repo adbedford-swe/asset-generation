@@ -37,6 +37,8 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--faces", type=int, default=None, help="mesh face budget (default 40000)")
     ap.add_argument("--texture", type=int, default=None, help="texture size (default 2048)")
     ap.add_argument("--voxels", type=int, default=None, help="fusion resolution (default 256)")
+    ap.add_argument("--views", type=int, default=None, help="splat renders for meshing (default 64)")
+    ap.add_argument("--render-size", type=int, default=None, help="size of those renders in pixels (default 768)")
     ap.add_argument("--from", dest="start", choices=STAGES, default=None, help="first stage to run")
     ap.add_argument("--to", dest="stop", choices=STAGES, default=None, help="last stage to run")
     ap.add_argument("--force", action="store_true", help="rerun stages that are up to date")
@@ -44,7 +46,8 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
 
 def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path | None, device: str) -> Options:
     mesh_args = []
-    for flag, value in (("--target_faces", a.faces), ("--texture_size", a.texture), ("--resolution", a.voxels)):
+    for flag, value in (("--target_faces", a.faces), ("--texture_size", a.texture), ("--resolution", a.voxels),
+                        ("--n_views", a.views), ("--render_size", a.render_size)):
         if value is not None:
             mesh_args += [flag, str(value)]
     stem = (image or ply).stem
