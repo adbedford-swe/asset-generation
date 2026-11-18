@@ -115,14 +115,15 @@ def build(manager: JobManager | None = None):
     spec0 = manager.image_spec
 
     def settings(prompts, height, device, loop, loop_frames, root_motion, seed, repetitions, faces, texture,
-                 voxels, beams, candidates, rig_class, cfg_scale, llm_url) -> Settings:
+                 voxels, beams, candidates, rig_class, cfg_scale, llm_url, idol_steps, flow_steps) -> Settings:
         return Settings(motions=[p.strip() for p in prompts.splitlines() if p.strip()],
                         height=float(height) if height else None, device=device or "auto", seed=int(seed),
                         loop=(str(int(loop_frames)) if loop_frames else "auto") if loop else "off",
                         root_motion=bool(root_motion), repetitions=int(repetitions), faces=int(faces),
                         texture=int(texture), voxels=int(voxels), num_beams=int(beams),
                         rig_candidates=int(candidates), rig_class=rig_class or None,
-                        cfg_scale=float(cfg_scale) if cfg_scale else None, llm_base_url=llm_url or None)
+                        cfg_scale=float(cfg_scale) if cfg_scale else None, llm_base_url=llm_url or None,
+                        idol_steps=int(idol_steps or 50), flow_steps=int(flow_steps or 32))
 
     def image_spec(backend, url, model, size, steps) -> ImageSpec:
         try:
@@ -131,7 +132,7 @@ def build(manager: JobManager | None = None):
             raise gr.Error(f"Image size {size!r} is not WIDTHxHEIGHT")
         return ImageSpec(backend=backend or spec0.backend, url=url or None, model=model or None, width=width,
                          height=height, steps=int(steps) if steps else None, workflow=spec0.workflow,
-                         command=spec0.command)
+                         command=spec0.command, keep_loaded=spec0.keep_loaded)
 
     def exports_for(job) -> list[str]:
         from .export import export_zip
@@ -322,6 +323,11 @@ def build(manager: JobManager | None = None):
                     device = gr.Dropdown(devices, value=devices[0], label="Device")
                 with gr.Accordion("Advanced", open=False):
                     with gr.Row():
+                        idol_steps = gr.Number(value=50, precision=0, minimum=1, label="Idol steps",
+                                               info="Image to splat; fewer is faster, rougher")
+                        flow_steps = gr.Number(value=32, precision=0, minimum=1, label="Motion steps",
+                                               info="Motion sampler; 25-50 is near UniMate's own solver")
+                    with gr.Row():
                         seed = gr.Number(value=42, precision=0, label="Seed")
                         repetitions = gr.Number(value=1, precision=0, minimum=1, label="Samples per motion")
                     with gr.Row():
@@ -350,7 +356,7 @@ def build(manager: JobManager | None = None):
                 log = gr.Textbox(label="Log", lines=12, max_lines=12, autoscroll=True)
 
         common = [prompts, height, device, loop, loop_frames, root_motion, seed, repetitions, faces, texture, voxels,
-                  beams, rig_candidates, rig_class, cfg_scale, llm_url]
+                  beams, rig_candidates, rig_class, cfg_scale, llm_url, idol_steps, flow_steps]
         image_controls = [backend, backend_url, image_model, image_size, image_steps]
         outputs = [strip, log, gallery, viewer, clip, download, exports, summary, job_state, runs]
         preview.click(preview_images, [text, *image_controls, count, img_seed], [candidates, draft_state])

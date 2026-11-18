@@ -20,6 +20,7 @@ import queue
 import re
 import secrets
 import shutil
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -94,6 +95,8 @@ class Settings:
     rig_class: str | None = None
     cfg_scale: float | None = None
     llm_base_url: str | None = None
+    idol_steps: int = 50
+    flow_steps: int = 32
 
     @classmethod
     def parse(cls, data: dict | None) -> "Settings":
@@ -113,7 +116,8 @@ class Settings:
                        mesh_args=["--target_faces", str(int(self.faces)), "--texture_size", str(int(self.texture)),
                                   "--resolution", str(int(self.voxels))],
                        llm_base_url=self.llm_base_url or None, cfg_scale=self.cfg_scale, loop=self.loop,
-                       root_motion=bool(self.root_motion), **inputs)
+                       root_motion=bool(self.root_motion), idol_steps=int(self.idol_steps),
+                       flow_steps=int(self.flow_steps), **inputs)
 
 
 class Job:
@@ -445,6 +449,18 @@ class JobManager:
             job.cancel_event.set()
         return job
 
+    def shutdown(self, timeout: float = 20.0) -> None:
+        """Cancel every queued and running job and wait for the running ones to stop their stages,
+        so stopping the server never leaves a stage holding a GPU."""
+        with self.lock:
+            jobs = [j for j in self.jobs.values() if j.active]
+        for job in jobs:
+            self.cancel(job.id)
+        end = time.time() + timeout
+        for job in jobs:
+            while job.status == "running" and time.time() < end:
+                job.wait(job.seq, 0.5)
+
     def _enqueue(self, job: Job) -> Job:
         with self.lock:
             self.jobs[job.id] = job
@@ -502,6 +518,7 @@ class ImageBackend(BaseModel):
     cfg_scale: float | None = None
     sampler: str | None = None
     style: bool | None = Field(None, description="frame the prompt as a full-body character (default true)")
+    keep_loaded: bool | None = Field(None, description="sdcpp: leave sd-server's model loaded afterwards")
 
 
 class Draft(BaseModel):
@@ -587,7 +604,7 @@ def create_api(manager: JobManager, token: str | None = None):
     def info():
         from .imagegen import probe
 
-        return {"name": "assetgen", "version": version(), "devices": manager.devices,
+        return {"name": "assetgen", "version": version(), "pid": os.getpid(), "devices": manager.devices,
                 "stages": STAGES, "engines": ["unity", "godot", "gltf"], "default_motions": DEFAULT_PROMPTS,
                 "image_backend": {**manager.image_spec.public(), "url": manager.image_spec.base_url,
                                   **probe(manager.image_spec)},
@@ -741,6 +758,7 @@ def create_app(manager: JobManager | None = None, token: str | None = None, ui: 
                               "and Godot. Make a job with POST /api/v1/jobs, follow it with "
                               "GET /api/v1/jobs/{id}/events, then fetch /export/unity or /export/godot.")
     app.state.manager = manager
+    app.router.on_shutdown.append(manager.shutdown)
     app.include_router(create_api(manager, token))
     if ui:
         import gradio as gr
@@ -773,12 +791,20 @@ def main(argv=None) -> None:
     ap.add_argument("--image-steps", type=int, default=None)
     ap.add_argument("--comfy-workflow", default=None, help="comfyui: an API-format workflow with {{prompt}}")
     ap.add_argument("--image-command", default=None, help='command: e.g. "sd-cli -p {prompt} -o {out}"')
+    ap.add_argument("--image-keep-loaded", action="store_true",
+                    help="sdcpp: leave sd-server's model loaded after each picture (default: unload it)")
+    ap.add_argument("--log-file", default=None, help="write the server's output here instead of the console")
     a = ap.parse_args(argv)
+    if a.log_file:
+        Path(a.log_file).parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(a.log_file, "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log_file
     width = height = None
     if a.image_size:
         width, height = (int(v) for v in a.image_size.lower().split("x"))
     spec = ImageSpec.from_env(backend=a.image_backend, url=a.image_url, model=a.image_model, width=width,
-                              height=height, steps=a.image_steps, workflow=a.comfy_workflow, command=a.image_command)
+                              height=height, steps=a.image_steps, workflow=a.comfy_workflow, command=a.image_command,
+                              keep_loaded=True if a.image_keep_loaded else None)
     devices = [d.strip() for d in a.devices.split(",")] if a.devices else None
     manager = JobManager(Path(a.out).resolve() if a.out else OUT_ROOT, devices, spec)
     if a.host not in ("127.0.0.1", "localhost", "::1") and not a.token:

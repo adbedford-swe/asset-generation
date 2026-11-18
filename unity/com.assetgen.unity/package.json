@@ -1,6 +1,6 @@
 {
   "name": "com.assetgen.unity",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "displayName": "Assetgen Characters",
   "description": "Text or a picture to an animated character, inside the Editor. Imports assetgen characters (.glb + .assetgen) as ready-to-use prefabs with an Animator Controller and a locomotion blend tree, generates new ones from an assetgen server, and adds `assetgen` commands to the Unity CLI.",
   "unity": "6000.0",

@@ -163,3 +163,17 @@ def test_settings_parse():
     assert s.loop == "120" and s.num_beams == 4
     with pytest.raises(ValueError, match="unknown settings: nope"):
         server.Settings.parse({"nope": 1})
+
+
+def test_step_settings_reach_the_stages(api, fake_pipeline):
+    from assetgen.pipeline import stage_commands
+
+    client, manager = api
+    job = client.post("/api/v1/jobs", json={"image": png_data_url(), "settings": {"idol_steps": 24, "flow_steps": 16}})
+    assert wait_for(manager.get(job.json()["id"])) == "done"
+    o = fake_pipeline[-1]
+    assert (o.idol_steps, o.flow_steps) == (24, 16)
+    cmds = stage_commands(o)
+    assert cmds["generate"][0][-2:] == ["--steps", "24"]
+    assert cmds["animate"][0][cmds["animate"][0].index("--flow_steps") + 1] == "16"
+    assert client.get("/api/v1/info").json()["settings"]["idol_steps"] == 50

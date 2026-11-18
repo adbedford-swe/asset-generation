@@ -4,8 +4,9 @@ The 3D stages need one picture of one character, whole and on a plain
 background. This module frames a short description into such a prompt and asks
 an image backend for it:
 
-  sdcpp     stable-diffusion.cpp's sd-server (also A1111, Forge, SD.Next): /sdapi/v1/txt2img
-  a1111     the same API, with A1111's default address
+  sdcpp     stable-diffusion.cpp's sd-server: loads its model for the picture and unloads it after,
+            so the GPU is free for the 3D stages (--image-keep-loaded to keep it)
+  a1111     A1111, Forge, SD.Next: /sdapi/v1/txt2img (sd-server serves it too)
   openai    any OpenAI-compatible /v1/images/generations endpoint (OpenAI, LocalAI, sd-server)
   comfyui   a ComfyUI server running your workflow (API format, with {{prompt}} placeholders)
   command   any program that writes an image: "sd-cli -p {prompt} -o {out} --seed {seed}"
@@ -40,6 +41,7 @@ NEGATIVE = ("cropped, cut off, out of frame, close-up, portrait, multiple charac
 DEFAULT_URLS = {"sdcpp": "http://127.0.0.1:1234", "a1111": "http://127.0.0.1:7860",
                 "openai": "https://api.openai.com/v1", "comfyui": "http://127.0.0.1:8188"}
 TIMEOUT = float(os.environ.get("ASSETGEN_IMAGE_TIMEOUT", 900))
+STATE_DIR = Path(os.environ.get("ASSETGEN_STATE_DIR") or Path.home() / ".cache" / "assetgen")
 
 
 @dataclass
@@ -57,6 +59,7 @@ class ImageSpec:
     workflow: str | None = None   # comfyui: path to an API-format workflow
     command: str | None = None    # command: program template
     style: bool = True            # frame the prompt as a full-body character on a plain background
+    keep_loaded: bool = False     # sdcpp: leave the model loaded after generating
 
     @property
     def base_url(self) -> str:
@@ -66,7 +69,8 @@ class ImageSpec:
     def from_env(cls, **overrides) -> "ImageSpec":
         env = {"backend": os.environ.get("ASSETGEN_IMAGE_BACKEND"), "url": os.environ.get("ASSETGEN_IMAGE_URL"),
                "model": os.environ.get("ASSETGEN_IMAGE_MODEL"), "workflow": os.environ.get("ASSETGEN_COMFY_WORKFLOW"),
-               "command": os.environ.get("ASSETGEN_IMAGE_COMMAND")}
+               "command": os.environ.get("ASSETGEN_IMAGE_COMMAND"),
+               "keep_loaded": os.environ.get("ASSETGEN_IMAGE_KEEP_LOADED", "").lower() in ("1", "true", "yes")}
         values = {k: v for k, v in env.items() if v}
         values.update({k: v for k, v in overrides.items() if v is not None})
         return cls(**values)
@@ -101,6 +105,10 @@ def _check(response):
     return response
 
 
+class ModelNotLoaded(RuntimeError):
+    """sd-server has no model loaded (another job unloaded it, or nothing was ever loaded)."""
+
+
 def sdapi(prompt: str, spec: ImageSpec, seed: int, count: int) -> list[bytes]:
     """A1111's /sdapi/v1/txt2img, as served by sd-server, A1111, Forge and SD.Next."""
     import requests
@@ -113,11 +121,114 @@ def sdapi(prompt: str, spec: ImageSpec, seed: int, count: int) -> list[bytes]:
         body["cfg_scale"] = spec.cfg_scale
     if spec.sampler:
         body["sampler_name"] = spec.sampler
-    if spec.model:
+    if spec.model and spec.backend != "sdcpp":
         body["override_settings"] = {"sd_model_checkpoint": spec.model}
-    r = _check(requests.post(f"{spec.base_url}/sdapi/v1/txt2img", json=body, headers=_headers(spec.backend),
-                             timeout=TIMEOUT))
-    return [_decode(b) for b in r.json()["images"]][:count]
+    r = requests.post(f"{spec.base_url}/sdapi/v1/txt2img", json=body, headers=_headers(spec.backend), timeout=TIMEOUT)
+    if r.status_code == 503 and "model_not_loaded" in r.text:
+        raise ModelNotLoaded(f"sd-server at {spec.base_url} has no model loaded")
+    return [_decode(b) for b in _check(r).json()["images"]][:count]
+
+
+# sd-server holds on to its peak VRAM after a generation, which leaves too little for Idol and the
+# stages after it. So the sdcpp backend loads the model for each picture and unloads it after. A
+# model chosen in sd-server's web UI (a recipe) can be loaded back through the API; one given with
+# -m on its command line cannot, so that one stays loaded. Each picture is made by a new process,
+# so the last recipe seen on each server is kept in STATE_DIR/sdcpp_models.json.
+
+def _sdcpp_request(spec: ImageSpec, method: str, path: str, timeout: float = 30, **kwargs):
+    import requests
+
+    return requests.request(method, f"{spec.base_url}{path}", headers=_headers(spec.backend), timeout=timeout,
+                            **kwargs)
+
+
+def _remembered(spec: ImageSpec) -> dict | None:
+    try:
+        return json.loads((STATE_DIR / "sdcpp_models.json").read_text()).get(spec.base_url)
+    except (OSError, ValueError):
+        return None
+
+
+def _remember(spec: ImageSpec, selection: dict) -> None:
+    path = STATE_DIR / "sdcpp_models.json"
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        state = {}
+    if state.get(spec.base_url) != selection:
+        state[spec.base_url] = selection
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2))
+
+
+def sdcpp_status(spec: ImageSpec) -> dict | None:
+    """sd-server's model status, or None from a server without the model API (an older sd-server)."""
+    r = _sdcpp_request(spec, "GET", "/sdcpp/v1/models/status", timeout=10)
+    return r.json() if r.ok else None
+
+
+def sdcpp_load(spec: ImageSpec, log=print) -> dict | None:
+    """Make sure sd-server has the model to generate with: ``spec.model`` (a recipe id) if given,
+    otherwise whatever is loaded, otherwise the recipe last seen on this server. Returns the
+    selection that can be loaded back after an unload, or None when there is none (a model from
+    sd-server's command line, or a server without the model API)."""
+    for _ in range(120):
+        status = sdcpp_status(spec)
+        if status is None:
+            return None
+        state, recipe = status.get("state"), status.get("recipe")
+        if state == "loading":
+            time.sleep(1.0)
+            continue
+        if state == "ready" and (spec.model is None or recipe == spec.model):
+            if not isinstance(recipe, str):
+                return None
+            selection = {"recipe": recipe, "models": status.get("models") or {}}
+            _remember(spec, selection)
+            return selection
+        selection = {"recipe": spec.model, "models": {}} if spec.model else _remembered(spec)
+        if selection is None:
+            raise RuntimeError(f"sd-server at {spec.base_url} has no model loaded: pick one in its web UI "
+                               "(assetgen remembers it), or pass --image-model <recipe id>")
+        log(f"[image] loading {selection['recipe']} on sd-server")
+        r = _sdcpp_request(spec, "POST", "/sdcpp/v1/models/load", json=selection, timeout=TIMEOUT)
+        if r.status_code in (409, 503):  # another job is switching models or generating
+            time.sleep(2.0)
+            continue
+        _check(r)
+        _remember(spec, selection)
+        return selection
+    raise TimeoutError(f"sd-server at {spec.base_url} stayed busy for several minutes")
+
+
+def sdcpp_unload(spec: ImageSpec, log=print) -> bool:
+    """Unload sd-server's model, freeing its VRAM. False when it is busy with another generation."""
+    r = _sdcpp_request(spec, "POST", "/sdcpp/v1/models/unload", json={}, timeout=120)
+    if r.status_code in (409, 503):
+        log("[image] sd-server is busy with another generation; its model stays loaded")
+        return False
+    _check(r)
+    log("[image] unloaded sd-server's model")
+    return True
+
+
+def sdcpp(prompt: str, spec: ImageSpec, seed: int, count: int) -> list[bytes]:
+    """stable-diffusion.cpp's sd-server: load the model if needed, generate, unload."""
+    for _ in range(3):
+        selection = sdcpp_load(spec)
+        try:
+            return sdapi(prompt, spec, seed, count)
+        except ModelNotLoaded:
+            continue  # another job unloaded it between the load and the generation
+        finally:
+            if not spec.keep_loaded:
+                if selection is not None:
+                    sdcpp_unload(spec)
+                elif (sdcpp_status(spec) or {}).get("origin") == "command_line":
+                    print("[image] sd-server's model came from its command line (-m), so assetgen cannot load it "
+                          "back and leaves it loaded; choose the model in sd-server's web UI instead to free the "
+                          "GPU between pictures")
+    raise ModelNotLoaded(f"sd-server at {spec.base_url} kept losing its model while generating")
 
 
 def openai_images(prompt: str, spec: ImageSpec, seed: int, count: int) -> list[bytes]:
@@ -214,7 +325,7 @@ def command(prompt: str, spec: ImageSpec, seed: int, count: int) -> list[bytes]:
 
 
 BACKENDS: dict[str, Callable[[str, ImageSpec, int, int], list[bytes]]] = {
-    "sdcpp": sdapi, "a1111": sdapi, "openai": openai_images, "comfyui": comfyui, "command": command,
+    "sdcpp": sdcpp, "a1111": sdapi, "openai": openai_images, "comfyui": comfyui, "command": command,
 }
 
 
@@ -230,7 +341,16 @@ def probe(spec: ImageSpec) -> dict:
     import requests
 
     try:
-        if spec.backend in ("sdcpp", "a1111"):
+        if spec.backend == "sdcpp":
+            r = requests.get(f"{spec.base_url}/sdcpp/v1/models/status", headers=_headers(spec.backend), timeout=3)
+            if r.ok:
+                status = r.json()
+                recipe = status.get("recipe")
+                models = [recipe] if isinstance(recipe, str) else []
+                return {"ok": True, "status": r.status_code, "models": models, "model_state": status.get("state")}
+            r = requests.get(f"{spec.base_url}/sdapi/v1/sd-models", headers=_headers(spec.backend), timeout=3)
+            models = [m.get("model_name") or m.get("title") for m in r.json()] if r.ok else []
+        elif spec.backend == "a1111":
             r = requests.get(f"{spec.base_url}/sdapi/v1/sd-models", headers=_headers(spec.backend), timeout=3)
             models = [m.get("model_name") or m.get("title") for m in r.json()] if r.ok else []
         elif spec.backend == "openai":
@@ -297,12 +417,14 @@ def main(argv=None) -> None:
     ap.add_argument("--workflow", default=None)
     ap.add_argument("--command", default=None)
     ap.add_argument("--raw", action="store_true", help="send the prompt as written, without the character framing")
+    ap.add_argument("--keep_loaded", action="store_true", help="sdcpp: leave sd-server's model loaded afterwards")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--count", type=int, default=1)
     a = ap.parse_args(argv)
     spec = ImageSpec.from_env(backend=a.backend, url=a.url, model=a.model, width=a.width, height=a.height,
                               steps=a.steps, cfg_scale=a.cfg_scale, sampler=a.sampler, workflow=a.workflow,
-                              command=a.command, style=False if a.raw else None)
+                              command=a.command, style=False if a.raw else None,
+                              keep_loaded=True if a.keep_loaded else None)
     write(a.prompt, Path(a.out), spec, a.seed, a.count)
 
 

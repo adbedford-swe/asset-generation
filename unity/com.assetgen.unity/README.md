@@ -42,10 +42,19 @@ speed, `AssetgenCharacter` speeds the animation up to keep the feet planted.
 
 ## Generating from the Editor
 
-**Window > Assetgen.** Start the server (`python server.py` in the assetgen folder; point
-**Project Settings > Assetgen** at it if it runs elsewhere), describe the character or pick a picture, choose the
-motions (or a preset) and press **Generate character**. Progress shows per stage, and the character is imported into
-`Assets/Characters/<name>/` when it finishes, even if you close the window.
+**Window > Assetgen.** Describe the character or pick a picture, choose the motions (or a preset) and press
+**Generate character**. Progress shows per stage, and the character is imported into `Assets/Characters/<name>/` when
+it finishes, even if you close the window. **Advanced** holds Idol's steps, the motion sampler's steps, prompt
+strength, seed, loop length, root motion, mesh and texture budgets and rig candidates. They are saved with the project,
+so the window and the CLI generate the same way.
+
+**The server runs itself.** When nothing answers at the server URL, Generate starts `server.py` in the background (no
+console window, logging to `Library/Assetgen/server.log`) and waits until it's ready. The toolbar shows its state, with
+Start, Stop, Restart and Log, and the server Unity started stops when the Editor quits. A server you started yourself
+shows as *external* and is left alone. Unity finds the assetgen checkout when the package was installed from it (as
+`assetgen export --project` does). Otherwise, in **Project Settings > Assetgen > Local server**, set the folder, the
+Python (by default the checkout's `.venv`), any environment such as `ASSETGEN_THIRD_PARTY`, and extra server arguments
+such as `--image-backend sdcpp --image-url http://127.0.0.1:1234`. These are saved per machine, not in the project.
 
 ## From the Unity CLI and agents
 
@@ -65,7 +74,7 @@ unity command assetgen play --target a_goblin_shaman_with_a_lantern --speed 0.5
 | Command | Does |
 |---|---|
 | `status` | The server, its devices and image backend, and the characters in the project. |
-| `generate` | Starts a character from `--prompt` and/or `--image`. Returns the job id; with `--wait`, waits and returns the prefab. |
+| `generate` | Starts a character from `--prompt` and/or `--image`, starting the server if none answers. `--idol-steps`, `--motion-steps` and `--seed` override the project's settings. Returns the job id; with `--wait`, waits and returns the prefab. |
 | `wait --id` | Waits for a job, imports it, returns the prefab and its clips. |
 | `job --id` / `cancel --id` | A job's progress; stop it. |
 | `import --source` | A job id, an export zip, a folder or a `.glb`/`.assetgen` pair into the project. |
@@ -73,6 +82,7 @@ unity command assetgen play --target a_goblin_shaman_with_a_lantern --speed 0.5
 | `build --character` | Rebuild a character's controller and prefab. |
 | `spawn --character` | Put a character in the open scene (`--position`, `--speed`, `--move-forward`). |
 | `play --target` | In Play mode: play a clip, or set the locomotion speed. |
+| `assetgen.server start` / `stop` / `status` / `log` | Run the local server from the project's settings, stop the one Unity started, check it, read its log. |
 
 `unity mcp` serves the same commands as MCP tools (`assetgen_generate`, `assetgen_spawn`, ...), so any MCP client
 can go from a sentence to a character standing in the scene. The commands live in an assembly that compiles only

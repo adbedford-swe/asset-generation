@@ -18,11 +18,13 @@ namespace Assetgen.Editor
         [SerializeField] float height = 1.8f;
         [SerializeField] List<string> motions = new List<string>();
         [SerializeField] Vector2 scroll;
+        [SerializeField] bool showAdvanced;
 
         ReorderableList m_MotionList;
         ServerInfo m_Info;
         string m_InfoError;
         bool m_Busy;
+        static bool s_Starting;
         JobInfo[] m_Jobs = Array.Empty<JobInfo>();
         readonly Dictionary<string, Texture2D> m_Thumbnails = new Dictionary<string, Texture2D>();
         double m_NextRefresh;
@@ -68,10 +70,44 @@ namespace Assetgen.Editor
                 elementHeight = EditorGUIUtility.singleLineHeight + 4,
             };
             JobTracker.Changed += OnJobChanged;
+            AssetgenServer.Changed += OnServerChanged;
             Refresh();
         }
 
-        void OnDisable() => JobTracker.Changed -= OnJobChanged;
+        void OnDisable()
+        {
+            JobTracker.Changed -= OnJobChanged;
+            AssetgenServer.Changed -= OnServerChanged;
+        }
+
+        void OnServerChanged()
+        {
+            m_NextRefresh = 0;
+            Repaint();
+        }
+
+        /// <summary>Starts the local server and waits until it answers, with a progress bar.</summary>
+        public static async void StartServer()
+        {
+            if (s_Starting)
+                return;
+            s_Starting = true;
+            try
+            {
+                AssetgenServer.Start();
+                await AssetgenServer.WaitUntilReadyAsync(new AssetgenClient());
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Assetgen: {e.Message}");
+            }
+            finally
+            {
+                s_Starting = false;
+                foreach (var window in Resources.FindObjectsOfTypeAll<AssetgenWindow>())
+                    window.OnServerChanged();
+            }
+        }
 
         void OnJobChanged(JobInfo job)
         {
@@ -83,14 +119,14 @@ namespace Assetgen.Editor
 
         void Update()
         {
-            var active = m_Jobs.Any(j => j.Active);
+            var active = m_Jobs.Any(j => j.Active) || s_Starting;
             if (EditorApplication.timeSinceStartup >= m_NextRefresh && (active || m_Info == null))
                 Refresh();
         }
 
         async void Refresh()
         {
-            m_NextRefresh = EditorApplication.timeSinceStartup + (m_Jobs.Any(j => j.Active) ? 2.0 : 10.0);
+            m_NextRefresh = EditorApplication.timeSinceStartup + (m_Jobs.Any(j => j.Active) || s_Starting ? 2.0 : 10.0);
             var client = new AssetgenClient();
             try
             {
@@ -155,13 +191,28 @@ namespace Assetgen.Editor
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
                 var connected = m_Info != null;
-                var dot = connected ? "<color=#4caf50>●</color>" : "<color=#9e9e9e>●</color>";
+                var owned = AssetgenServer.Owned;
+                var starting = !connected && (s_Starting || owned);
+                var dot = connected ? "<color=#4caf50>●</color>" : starting ? "<color=#f0b400>●</color>" : "<color=#9e9e9e>●</color>";
                 var text = connected
                     ? $"{dot} assetgen {m_Info.version} · {string.Join(", ", m_Info.devices ?? Array.Empty<string>())} · images: " +
-                      $"{m_Info.image_backend?.backend}{(m_Info.image_backend != null && m_Info.image_backend.ok ? "" : " (offline)")}"
-                    : $"{dot} {m_InfoError ?? "connecting…"}";
+                      $"{m_Info.image_backend?.backend}{(m_Info.image_backend != null && m_Info.image_backend.ok ? "" : " (offline)")}" +
+                      (owned ? "" : " · external")
+                    : starting ? $"{dot} starting the server…" : $"{dot} {m_InfoError ?? "connecting…"}";
                 GUILayout.Label(text, new GUIStyle(EditorStyles.miniLabel) { richText = true });
                 GUILayout.FlexibleSpace();
+                if (!connected && !starting && AssetgenServer.CannotStartReason == null &&
+                    GUILayout.Button("Start server", EditorStyles.toolbarButton))
+                    StartServer();
+                if (owned && GUILayout.Button("Stop", EditorStyles.toolbarButton))
+                    AssetgenServer.Stop();
+                if (owned && connected && GUILayout.Button("Restart", EditorStyles.toolbarButton))
+                {
+                    AssetgenServer.Stop();
+                    StartServer();
+                }
+                if ((owned || File.Exists(AssetgenServer.LogPath)) && GUILayout.Button("Log", EditorStyles.toolbarButton))
+                    EditorUtility.OpenWithDefaultApp(AssetgenServer.LogPath);
                 if (GUILayout.Button("Web UI", EditorStyles.toolbarButton))
                     Application.OpenURL(AssetgenSettings.instance.serverUrl);
                 if (GUILayout.Button("Refresh", EditorStyles.toolbarButton))
@@ -169,9 +220,13 @@ namespace Assetgen.Editor
                 if (GUILayout.Button(EditorGUIUtility.IconContent("_Popup"), EditorStyles.toolbarButton))
                     SettingsService.OpenProjectSettings("Project/Assetgen");
             }
-            if (m_Info == null && m_InfoError != null)
-                EditorGUILayout.HelpBox("Start the server with `python server.py` in the asset-generation folder, " +
-                                        "or point Project Settings > Assetgen at a running one.", MessageType.Info);
+            if (m_Info == null && m_InfoError != null && !s_Starting && !AssetgenServer.Owned)
+            {
+                var reason = AssetgenServer.CannotStartReason;
+                EditorGUILayout.HelpBox(reason == null
+                    ? "No server is running. Start it here, or just press Generate: Unity starts it when needed."
+                    : $"No server is running. {reason}", MessageType.Info);
+            }
         }
 
         void DrawCreate()
@@ -214,12 +269,38 @@ namespace Assetgen.Editor
             m_MotionList.DoLayoutList();
             GUILayout.Label("Each motion is a clip. Start with \"An object\" and describe one thing; clips loop seamlessly " +
                             "unless the line ends in [once].", m_Muted);
+            DrawAdvanced();
 
             var picture = PictureBytes();
-            using (new EditorGUI.DisabledScope(m_Info == null || m_Busy || (string.IsNullOrWhiteSpace(prompt) && picture == null)))
+            var canStart = AssetgenServer.StartWhenNeeded && AssetgenServer.CannotStartReason == null;
+            using (new EditorGUI.DisabledScope((m_Info == null && !canStart) || m_Busy ||
+                                               (string.IsNullOrWhiteSpace(prompt) && picture == null)))
             {
-                if (GUILayout.Button(m_Busy ? "Submitting…" : "Generate character", GUILayout.Height(30)))
+                var label = m_Busy ? (s_Starting ? "Starting the server…" : "Submitting…") : "Generate character";
+                if (GUILayout.Button(label, GUILayout.Height(30)))
                     Generate(picture);
+            }
+        }
+
+        void DrawAdvanced()
+        {
+            showAdvanced = EditorGUILayout.Foldout(showAdvanced, "Advanced", true);
+            if (!showAdvanced)
+                return;
+            var settings = AssetgenSettings.instance;
+            var serialized = new SerializedObject(settings);
+            var generation = serialized.FindProperty("generation");
+            EditorGUI.BeginChangeCheck();
+            using (new EditorGUI.IndentLevelScope())
+            {
+                foreach (var name in new[] { "idolSteps", "motionSteps", "promptStrength", "seed", "loopFrames", "rootMotion",
+                                             "faceBudget", "textureSize", "rigCandidates" })
+                    EditorGUILayout.PropertyField(generation.FindPropertyRelative(name));
+            }
+            if (EditorGUI.EndChangeCheck())
+            {
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+                settings.SaveSettings();
             }
         }
 
@@ -261,9 +342,23 @@ namespace Assetgen.Editor
                     name = characterName.Trim(),
                     height = height,
                     motions = motions.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).ToArray(),
+                    settings = AssetgenSettings.instance.generation.ToJob(),
                 };
                 if (picture != null)
                     request.image = "data:image/png;base64," + Convert.ToBase64String(picture);
+                if (m_Info == null)
+                {
+                    s_Starting = true;
+                    Repaint();
+                    try
+                    {
+                        await AssetgenServer.EnsureRunningAsync();
+                    }
+                    finally
+                    {
+                        s_Starting = false;
+                    }
+                }
                 var job = await new AssetgenClient().SubmitAsync(request);
                 JobTracker.Track(job.id);
                 m_Jobs = new[] { job }.Concat(m_Jobs.Where(j => j.id != job.id)).ToArray();

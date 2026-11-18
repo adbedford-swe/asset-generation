@@ -101,7 +101,7 @@ turns it off) and asks whichever backend you point it at:
 
 | Backend | Talks to | Default address |
 |---|---|---|
-| `sdcpp` | stable-diffusion.cpp's `sd-server` (`/sdapi/v1/txt2img`) | `http://127.0.0.1:1234` |
+| `sdcpp` | stable-diffusion.cpp's `sd-server`, loading its model for each picture and unloading it after | `http://127.0.0.1:1234` |
 | `a1111` | AUTOMATIC1111, Forge, SD.Next (same API) | `http://127.0.0.1:7860` |
 | `openai` | Any OpenAI-compatible `/v1/images/generations`: OpenAI, LocalAI, sd-server | `https://api.openai.com/v1` |
 | `comfyui` | Your ComfyUI workflow (API format, with `{{prompt}}`, `{{seed}}`, ... placeholders) | `http://127.0.0.1:8188` |
@@ -112,6 +112,12 @@ server, or with `ASSETGEN_IMAGE_BACKEND`, `ASSETGEN_IMAGE_URL` and `ASSETGEN_IMA
 `ASSETGEN_IMAGE_API_KEY` (or `OPENAI_API_KEY`) and are never written to run folders. In the web UI, **Preview images**
 shows a few candidates so you can pick the one to build before the 3D stages spend their minutes. To add a backend, see
 `assetgen.imagegen.register`.
+
+sd-server holds on to its peak VRAM after generating, which leaves the 3D stages short. So with `sdcpp`, assetgen
+unloads the model once the picture is made and loads it again for the next one, which sd.cpp does quickly. Pick the
+model in sd-server's web UI once (assetgen remembers the recipe), or name one with `--image-model <recipe id>`. A model
+given to sd-server with `-m` can't be loaded back through its API, so that one stays loaded. `--image-keep-loaded`
+(or `ASSETGEN_IMAGE_KEEP_LOADED=1`) leaves the model loaded.
 
 ## The server
 
@@ -170,7 +176,9 @@ goblin.Play("casts_a_spell");             // a one-shot; returns to Locomotion b
 ```
 
 **Window > Assetgen** generates from inside the Editor: describe or pick a picture, choose motions (or a preset),
-press Generate. The character lands in `Assets/Characters/` when it's done.
+press Generate. The character lands in `Assets/Characters/` when it's done. There's no server to start by hand: Unity
+runs `server.py` in the background when it's needed, shows its state with Start/Stop/Restart/Log, and stops it with
+the Editor. Steps, seed, prompt strength and the mesh budgets are under **Advanced**.
 
 **For agents.** With the [Unity CLI](https://docs.unity.com/en-us/unity-cli) and its Pipeline package in the
 project, the package adds an `assetgen` command group to the running Editor:
@@ -293,7 +301,8 @@ travel is removed and its speed goes into the character file (and the clip's glT
 character to match. `--root-motion` keeps the travel, for engines that drive movement from the root bone. `--loop off`
 turns looping off; `--loop 120` makes 120-frame (4 s) loops, any length up to 600 frames.
 
-Other options: `--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3; try 5 to 7
+Other options: `--idol-steps` (Idol's sampling steps, default 50) and `--flow-steps` (motion sampler steps, default 32),
+`--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3; try 5 to 7
 when a prompt is ignored), `--rig-class mixamo` (force a Mixamo-template skeleton on a humanoid), `--num-beams`
 (SkinTokens beam width, default 10), `--faces` / `--texture` / `--voxels` (mesh budget),
 `--llm-base-url http://localhost:8080/v1` (label joints with a local llama.cpp server), `--mode real` (photographs).

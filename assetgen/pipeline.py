@@ -58,6 +58,7 @@ class Options:
     loop: str = "auto"
     root_motion: bool = False
     flow_steps: int | None = None
+    idol_steps: int | None = None
     fbx: bool = False
 
 
@@ -78,12 +79,16 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
                 args += [flag, value]
         if not spec.style:
             args.append("--raw")
+        if spec.keep_loaded:
+            args.append("--keep_loaded")
         cmds["image"] = (args, [image])
     ply = (o.ply.resolve() if o.ply else splat / "splat.ply")
     reference = o.reference.resolve() if o.reference else (splat / "input.png" if image else None)
     if image:
         cmds["generate"] = (["assetgen.generate", "--image", image, "--out", splat, "--device", o.device,
-                             "--mode", o.mode, "--seed", o.seed], [splat / "splat.ply", splat / "input.png"])
+                             "--mode", o.mode, "--seed", o.seed,
+                             *(["--steps", o.idol_steps] if o.idol_steps else [])],
+                            [splat / "splat.ply", splat / "input.png"])
     mesh = ["assetgen.meshing", "--ply", ply, "--out", out / "1_mesh", "--device", o.device, *o.mesh_args]
     if reference:
         mesh += ["--reference", reference]
