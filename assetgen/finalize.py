@@ -190,6 +190,37 @@ def _scale_to_height(doc, blob, height: float) -> float:
     return s
 
 
+def ground(path: Path, log=print) -> float:
+    """Raise or lower the asset so its feet meet y = 0 and save it again. Returns the shift.
+
+    UniMate's canonical asset is not grounded, so the merged clips can stand well below the
+    origin. The ground is the median over the looping clips' frames of the lowest vertex (the
+    rest pose when there are no loops), so a walk's planted feet touch y = 0."""
+    import pygltflib as gl
+
+    from .gltf_anim import AnimatedGLB
+
+    g = AnimatedGLB(path)
+    lows = []
+    for i, anim in enumerate(g.doc.animations):
+        if (anim.extras or {}).get("loop"):
+            end = g.duration(i)
+            lows += [float(g.posed(i, end * k / 12)[:, 1].min()) for k in range(12)]
+    rest = g.posed(None)
+    floor = float(np.median(lows)) if lows else float(rest[:, 1].min())
+    if abs(floor) < 1e-4 * float(np.ptp(rest[:, 1]) or 1.0):
+        return 0.0
+    doc = gl.GLTF2.load_binary(str(path))
+    for i in doc.scenes[doc.scene or 0].nodes:
+        node = doc.nodes[i]
+        t = list(node.translation or [0.0, 0.0, 0.0])
+        t[1] -= floor
+        node.translation = t
+    doc.save_binary(str(path))
+    log(f"[finalize] grounded: moved the asset {-floor:+.3f} along y")
+    return -floor
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--clips", required=True, help="clips.json written by the animate stage")
@@ -200,8 +231,10 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     out = Path(a.out)
     info = merge_clips(json.loads(Path(a.clips).read_text()), out, a.height, root_motion=a.root_motion)
+    info["ground_offset"] = round(ground(out), 5)
     from PIL import Image
 
+    from . import character
     from .gltf_anim import AnimatedGLB, contact_sheet, loop_seam
 
     g = AnimatedGLB(out)
@@ -214,6 +247,7 @@ def main(argv=None) -> None:
     out.with_suffix(".json").write_text(json.dumps(info, indent=2))
     Image.fromarray(contact_sheet(out)).save(out.with_suffix(".png"))
     print(f"[finalize] clip contact sheet: {out.with_suffix('.png')}")
+    print(f"[finalize] character file: {character.write(out, info)}")
 
 
 if __name__ == "__main__":

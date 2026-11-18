@@ -1,20 +1,25 @@
-"""assetgen: image -> rigged, animated glTF.
+"""assetgen: text or image -> rigged, animated character for Unity, Godot or any glTF engine.
 
   assetgen setup                       fetch SkinTokens, UniMate and their weights
   assetgen doctor                      check GPU, packages, checkouts and weights
+  assetgen run --text "a goblin shaman with a lantern" --out outputs/goblin
   assetgen run --image fig.png --out outputs/fig
   assetgen run --ply splat.ply --reference input.png --out outputs/x --from rig
   assetgen batch --images figs/ --out outputs --devices cuda:0,cuda:1
   assetgen batch --splats splats/ --out outputs --devices cuda:0,cuda:1
-  assetgen webui [--host 0.0.0.0]                       browser front end
+  assetgen image --prompt "a goblin shaman" --out drafts/goblin --count 4   (text to image only)
+  assetgen export outputs/goblin --engine unity --project ~/MyGame
+  assetgen serve [--host 0.0.0.0]                       HTTP API and web UI (also: python server.py)
   assetgen synth --mesh Fox.glb --out testdata/fox      (Idol-like test input from a mesh)
 """
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
+from .imagegen import BACKENDS, ImageSpec
 from .pipeline import STAGES, Options, run
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -48,19 +53,39 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--voxels", type=int, default=None, help="fusion resolution (default 256)")
     ap.add_argument("--views", type=int, default=None, help="splat renders for meshing (default 64)")
     ap.add_argument("--render-size", type=int, default=None, help="size of those renders in pixels (default 768)")
+    ap.add_argument("--image-backend", default=None, help=f"with --text: {', '.join(BACKENDS)} (default sdcpp)")
+    ap.add_argument("--image-url", default=None, help="with --text: the image server, e.g. http://127.0.0.1:1234")
+    ap.add_argument("--image-model", default=None)
+    ap.add_argument("--image-size", default=None, help="with --text: WIDTHxHEIGHT (default 1024x1024)")
+    ap.add_argument("--image-steps", type=int, default=None)
+    ap.add_argument("--comfy-workflow", default=None, help="comfyui: an API-format workflow with {{prompt}}")
+    ap.add_argument("--image-command", default=None, help='command backend: e.g. "sd-cli -p {prompt} -o {out}"')
+    ap.add_argument("--raw-prompt", action="store_true",
+                    help="send --text to the image backend as written, without the full-body character framing")
     ap.add_argument("--from", dest="start", choices=STAGES, default=None, help="first stage to run")
     ap.add_argument("--to", dest="stop", choices=STAGES, default=None, help="last stage to run")
     ap.add_argument("--force", action="store_true", help="rerun stages that are up to date")
 
 
-def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path | None, device: str) -> Options:
+def image_spec(a) -> ImageSpec:
+    width = height = None
+    if a.image_size:
+        width, height = (int(v) for v in a.image_size.lower().split("x"))
+    return ImageSpec.from_env(backend=a.image_backend, url=a.image_url, model=a.image_model, width=width,
+                              height=height, steps=a.image_steps, workflow=a.comfy_workflow,
+                              command=a.image_command, style=False if a.raw_prompt else None)
+
+
+def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path | None, device: str,
+             text: str | None = None) -> Options:
     mesh_args = []
     for flag, value in (("--target_faces", a.faces), ("--texture_size", a.texture), ("--resolution", a.voxels),
                         ("--n_views", a.views), ("--render_size", a.render_size)):
         if value is not None:
             mesh_args += [flag, str(value)]
-    stem = (image or ply).stem
-    return Options(out=out, image=image, ply=ply, reference=reference, name=a.name or stem.replace(" ", "_"),
+    stem = (image or ply).stem if (image or ply) else re.sub(r"[^A-Za-z0-9]+", "_", text or "asset").strip("_")[:32]
+    return Options(out=out, text=text, image_spec=image_spec(a) if text else None, image=image, ply=ply,
+                   reference=reference, name=a.name or stem.replace(" ", "_"),
                    device=device, mode=a.mode, seed=a.seed, prompts=a.prompt, repetitions=a.repetitions,
                    height=a.height, rig_class=a.rig_class, num_beams=a.num_beams, rig_candidates=a.rig_candidates,
                    skin_postprocess=a.skin_postprocess, mesh_args=mesh_args, llm_base_url=a.llm_base_url,
@@ -69,10 +94,10 @@ def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path
 
 
 def cmd_run(a) -> None:
-    if bool(a.image) == bool(a.ply):
-        raise SystemExit("give exactly one of --image or --ply")
+    if sum(map(bool, (a.text, a.image, a.ply))) != 1:
+        raise SystemExit("give exactly one of --text, --image or --ply")
     o = _options(a, Path(a.out), Path(a.image) if a.image else None, Path(a.ply) if a.ply else None,
-                 Path(a.reference) if a.reference else None, a.device)
+                 Path(a.reference) if a.reference else None, a.device, text=a.text)
     final = run(o, a.start, a.stop, a.force)
     if final.exists():
         print(f"done: {final}")
@@ -92,7 +117,10 @@ def _batch_worker(queue, device, args, out_root, results):
             item = queue.get_nowait()
         except Exception:
             return
-        if item.is_dir():  # a splat folder, or an earlier run's output folder
+        if isinstance(item, str):  # a description, from --texts
+            stem = re.sub(r"[^A-Za-z0-9]+", "_", item).strip("_")[:32] or "asset"
+            o = _options(args, out_root / stem, None, None, None, device, text=item)
+        elif item.is_dir():  # a splat folder, or an earlier run's output folder
             folder = _splat_folder(item)
             ref = folder / "input.png"
             o = _options(args, out_root / item.name, None, folder / "splat.ply", ref if ref.exists() else None, device)
@@ -101,23 +129,26 @@ def _batch_worker(queue, device, args, out_root, results):
             o = _options(args, out_root / item.stem, item, None, None, device)
         try:
             run(o, args.start, args.stop, args.force, log=lambda m, d=device, n=o.name: print(f"[{d} {n}] {m}"))
-            results.append((item.name, "ok"))
+            results.append((o.name, "ok"))
         except SystemExit as e:
-            results.append((item.name, str(e)))
+            results.append((o.name, str(e)))
 
 
 def cmd_batch(a) -> None:
     import queue
     import threading
 
-    if bool(a.images) == bool(a.splats):
-        raise SystemExit("give exactly one of --images or --splats")
-    if a.images:
+    if sum(map(bool, (a.images, a.splats, a.texts))) != 1:
+        raise SystemExit("give exactly one of --images, --splats or --texts")
+    if a.texts:
+        items = [line.strip() for line in Path(a.texts).read_text().splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+    elif a.images:
         items = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS)
     else:
         items = sorted(p for p in Path(a.splats).iterdir() if p.is_dir() and _splat_folder(p))
     if not items:
-        raise SystemExit(f"nothing to do in {a.images or a.splats}")
+        raise SystemExit(f"nothing to do in {a.images or a.splats or a.texts}")
     q = queue.Queue()
     for p in items:
         q.put(p)
@@ -147,6 +178,23 @@ def cmd_doctor(a) -> None:
     sys.exit(0 if doctor() else 1)
 
 
+def cmd_image(a) -> None:
+    from .imagegen import write
+
+    write(a.prompt, Path(a.out), image_spec(a), a.seed if a.seed >= 0 else None, a.count)
+
+
+def cmd_export(a) -> None:
+    from .export import export, export_zip, install
+
+    if a.project:
+        install(Path(a.source), a.engine, Path(a.project), a.folder, a.package_source)
+    elif a.zip:
+        print(export_zip(Path(a.source), a.engine, Path(a.out) if a.out else None))
+    else:
+        print(export(Path(a.source), a.engine, Path(a.out or "exports")))
+
+
 def cmd_synth(a) -> None:
     import torch
     from PIL import Image
@@ -168,10 +216,12 @@ def main(argv=None) -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-    ap = argparse.ArgumentParser(prog="assetgen", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="assetgen", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="one asset, image or splat to animated glTF")
+    r = sub.add_parser("run", help="one character: text, image or splat to animated glTF")
+    r.add_argument("--text", default=None, help="describe the character; an image backend draws it first")
     r.add_argument("--image", default=None)
     r.add_argument("--ply", default=None, help="start from an existing splat instead of an image")
     r.add_argument("--reference", default=None, help="with --ply: the Idol input image, for orientation")
@@ -181,6 +231,7 @@ def main(argv=None) -> None:
 
     b = sub.add_parser("batch", help="a folder of images (or of splat folders), shared among GPUs")
     b.add_argument("--images", default=None)
+    b.add_argument("--texts", default=None, help="a text file: one character description per line")
     b.add_argument("--splats", default=None,
                    help="folder of <name>/splat.ply (+ input.png), or of earlier runs' output folders")
     b.add_argument("--out", required=True)
@@ -192,14 +243,33 @@ def main(argv=None) -> None:
     s.add_argument("--no-weights", action="store_true")
     s.set_defaults(func=cmd_setup)
 
-    w = sub.add_parser("webui", help="browser front end")
-    w.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to reach it from other machines")
-    w.add_argument("--port", type=int, default=7860)
-    w.add_argument("--device", default=None)
-    w.add_argument("--concurrency", type=int, default=1, help="runs at once (one per GPU at most)")
-    w.set_defaults(func=lambda a: __import__("assetgen.webui", fromlist=["main"]).main(
-        ["--host", a.host, "--port", str(a.port), "--concurrency", str(a.concurrency),
-         *(["--device", a.device] if a.device else [])]))
+    for command, text in (("serve", "HTTP API and web UI on one port (see assetgen serve --help)"),
+                          ("webui", "same as serve")):
+        w = sub.add_parser(command, help=text, add_help=False)
+        w.set_defaults(func=lambda a: __import__("assetgen.server", fromlist=["main"]).main(a.rest))
+
+    i = sub.add_parser("image", help="text to character image only (to try a prompt or a backend)")
+    i.add_argument("--prompt", required=True)
+    i.add_argument("--out", required=True)
+    i.add_argument("--count", type=int, default=1)
+    i.add_argument("--seed", type=int, default=-1)
+    for flag in ("--image-backend", "--image-url", "--image-model", "--image-size", "--comfy-workflow",
+                 "--image-command"):
+        i.add_argument(flag, default=None)
+    i.add_argument("--image-steps", type=int, default=None)
+    i.add_argument("--raw-prompt", action="store_true")
+    i.set_defaults(func=cmd_image)
+
+    e = sub.add_parser("export", help="package a finished character for unity, godot or plain gltf")
+    e.add_argument("source", help="a run folder or its <name>.glb")
+    e.add_argument("--engine", choices=["unity", "godot", "gltf"], default="unity")
+    e.add_argument("--project", default=None, help="copy straight into this Unity or Godot project")
+    e.add_argument("--folder", default=None, help="folder inside the project (Assets/Characters, characters)")
+    e.add_argument("--package-source", choices=["auto", "local", "git"], default="auto",
+                   help="unity: reference com.assetgen.unity from this checkout (local) or from GitHub (git)")
+    e.add_argument("--zip", action="store_true", help="write <name>-<engine>.zip instead of a folder")
+    e.add_argument("--out", default=None, help="folder (default exports/) or zip path")
+    e.set_defaults(func=cmd_export)
 
     d = sub.add_parser("doctor", help="check the environment")
     d.set_defaults(func=cmd_doctor)
@@ -212,7 +282,11 @@ def main(argv=None) -> None:
     y.add_argument("--gaussians", type=int, default=250_000)
     y.set_defaults(func=cmd_synth)
 
-    a = ap.parse_args(argv)
+    a, rest = ap.parse_known_args(argv)
+    if a.cmd in ("serve", "webui"):
+        a.rest = rest
+    elif rest:
+        ap.error(f"unrecognized arguments: {' '.join(rest)}")
     a.func(a)
 
 
