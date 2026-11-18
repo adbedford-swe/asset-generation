@@ -76,8 +76,12 @@ def _env(device: str) -> dict:
     env.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
     m = re.fullmatch(r"cuda:(\d+)", device)
     if m:
-        env["CUDA_VISIBLE_DEVICES"] = m.group(1)
-        env["HIP_VISIBLE_DEVICES"] = m.group(1)
+        # One mask only: ROCm builds read HIP_VISIBLE_DEVICES, CUDA builds CUDA_VISIBLE_DEVICES.
+        from importlib.metadata import version
+
+        key = "HIP_VISIBLE_DEVICES" if "rocm" in version("torch") else "CUDA_VISIBLE_DEVICES"
+        env.pop("HIP_VISIBLE_DEVICES" if key == "CUDA_VISIBLE_DEVICES" else "CUDA_VISIBLE_DEVICES", None)
+        env[key] = m.group(1)
     env["PYTHONPATH"] = str(unimate_dir()) + os.pathsep + env.get("PYTHONPATH", "")
     return env
 

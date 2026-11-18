@@ -58,6 +58,9 @@ def main(argv=None) -> None:
     for name in ("n_views", "render_size", "resolution", "target_faces", "texture_size"):
         ap.add_argument(f"--{name}", type=int, default=getattr(d, name))
     a = ap.parse_args(argv)
+    from .device import use_device
+
+    use_device(a.device)
     s = MeshSettings(n_views=a.n_views, render_size=a.render_size, resolution=a.resolution,
                      target_faces=a.target_faces, texture_size=a.texture_size)
     run(Path(a.ply), Path(a.out), Path(a.reference) if a.reference else None, a.device, s, a.height)

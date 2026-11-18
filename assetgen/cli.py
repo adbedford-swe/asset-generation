@@ -5,6 +5,7 @@
   assetgen run --image fig.png --out outputs/fig
   assetgen run --ply splat.ply --reference input.png --out outputs/x --from rig
   assetgen batch --images figs/ --out outputs --devices cuda:0,cuda:1
+  assetgen batch --splats splats/ --out outputs --devices cuda:0,cuda:1
   assetgen synth --mesh Fox.glb --out testdata/fox      (Idol-like test input from a mesh)
 """
 from __future__ import annotations
@@ -66,26 +67,36 @@ def cmd_run(a) -> None:
 def _batch_worker(queue, device, args, out_root, results):
     while True:
         try:
-            image = queue.get_nowait()
+            item = queue.get_nowait()
         except Exception:
             return
-        o = _options(args, out_root / image.stem, image, None, None, device)
+        if item.is_dir():  # a splat folder: splat.ply, and input.png when there is one
+            ref = item / "input.png"
+            o = _options(args, out_root / item.name, None, item / "splat.ply", ref if ref.exists() else None, device)
+            o.name = args.name or item.name
+        else:
+            o = _options(args, out_root / item.stem, item, None, None, device)
         try:
-            run(o, args.start, args.stop, args.force, log=lambda m, d=device, n=image.stem: print(f"[{d} {n}] {m}"))
-            results.append((image.name, "ok"))
+            run(o, args.start, args.stop, args.force, log=lambda m, d=device, n=o.name: print(f"[{d} {n}] {m}"))
+            results.append((item.name, "ok"))
         except SystemExit as e:
-            results.append((image.name, str(e)))
+            results.append((item.name, str(e)))
 
 
 def cmd_batch(a) -> None:
     import queue
     import threading
 
-    images = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS)
-    if not images:
-        raise SystemExit(f"no images in {a.images}")
+    if bool(a.images) == bool(a.splats):
+        raise SystemExit("give exactly one of --images or --splats")
+    if a.images:
+        items = sorted(p for p in Path(a.images).iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS)
+    else:
+        items = sorted(p for p in Path(a.splats).iterdir() if (p / "splat.ply").exists())
+    if not items:
+        raise SystemExit(f"nothing to do in {a.images or a.splats}")
     q = queue.Queue()
-    for p in images:
+    for p in items:
         q.put(p)
     results = []
     # Each stage is its own process, so one thread per GPU is enough to keep every GPU busy.
@@ -125,7 +136,7 @@ def cmd_synth(a) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     canon = mesh_to_gaussians(load_textured_mesh(a.mesh), a.gaussians).to(device)
     save_ply(idol_like(canon, a.yaw), out / "splat.ply")
-    Image.fromarray(input_image(canon, a.yaw + a.view)).save(out / "input.png")
+    Image.fromarray(input_image(canon, a.view)).save(out / "input.png")  # relative to the facing
     print(f"wrote {out / 'splat.ply'} and {out / 'input.png'} (facing {a.yaw} deg, viewed from {a.yaw + a.view})")
 
 
@@ -133,7 +144,7 @@ def main(argv=None) -> None:
     # Stage output is relayed verbatim; never let a console code page turn a character into a crash.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     ap = argparse.ArgumentParser(prog="assetgen", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -145,8 +156,9 @@ def main(argv=None) -> None:
     _add_run_options(r)
     r.set_defaults(func=cmd_run)
 
-    b = sub.add_parser("batch", help="a folder of images, shared among GPUs")
-    b.add_argument("--images", required=True)
+    b = sub.add_parser("batch", help="a folder of images (or of splat folders), shared among GPUs")
+    b.add_argument("--images", default=None)
+    b.add_argument("--splats", default=None, help="folder of <name>/splat.ply (+ input.png), e.g. earlier runs")
     b.add_argument("--out", required=True)
     b.add_argument("--devices", default="cuda:0", help="comma-separated, e.g. cuda:0,cuda:1")
     _add_run_options(b)
