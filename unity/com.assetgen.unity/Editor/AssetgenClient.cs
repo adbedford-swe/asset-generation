@@ -114,6 +114,22 @@ namespace Assetgen.Editor
         public string name;
         public string[] motions;
         public float height = 1.8f;
+        public JobSettings settings;
+    }
+
+    /// <summary>The server's job settings that the Editor sets (server.py: Settings).</summary>
+    [Serializable]
+    public sealed class JobSettings
+    {
+        public int idol_steps = 50;
+        public int flow_steps = 32;
+        public float cfg_scale = 3f;
+        public int seed = 42;
+        public string loop = "auto";
+        public bool root_motion;
+        public int faces = 40000;
+        public int texture = 2048;
+        public int rig_candidates = 3;
     }
 
     [Serializable]

@@ -18,6 +18,7 @@ namespace Assetgen.Editor
     static class AssetgenCommands
     {
         const string Group = "assetgen";
+        const string ServerGroup = "assetgen.server";
 
         [CliGroupCommand(Group, "The assetgen server this project talks to, and the characters already in the project.",
             Effect = CommandEffect.ReadOnly)]
@@ -48,6 +49,7 @@ namespace Assetgen.Editor
                 charactersFolder = AssetgenSettings.instance.charactersFolder,
                 characters = CharacterImport.All().Count(),
                 pendingJobs = JobTracker.Pending,
+                serverStartedByEditor = AssetgenServer.Owned,
             });
             return ExitCode.Success;
         }
@@ -67,7 +69,10 @@ namespace Assetgen.Editor
             string[] motions = null,
             [CliArg("height", "Height in metres")] float height = 0f,
             [CliArg("name", "Character name (default: from the description)")] string name = "",
-            [CliArg("wait", "Wait for the character and import it before returning")] bool wait = false)
+            [CliArg("wait", "Wait for the character and import it before returning")] bool wait = false,
+            [CliArg("idol-steps", "Idol's sampling steps (default: Project Settings > Assetgen)")] int idolSteps = 0,
+            [CliArg("motion-steps", "Motion sampler steps (default: Project Settings > Assetgen)")] int motionSteps = 0,
+            [CliArg("seed", "Seed (default: Project Settings > Assetgen)")] int seed = -1)
         {
             if (string.IsNullOrWhiteSpace(prompt) && string.IsNullOrWhiteSpace(image))
             {
@@ -81,7 +86,14 @@ namespace Assetgen.Editor
                 name = name.Trim(),
                 height = height > 0f ? height : settings.defaultHeight,
                 motions = motions != null && motions.Length > 0 ? motions : settings.defaultMotions.ToArray(),
+                settings = settings.generation.ToJob(),
             };
+            if (idolSteps > 0)
+                request.settings.idol_steps = idolSteps;
+            if (motionSteps > 0)
+                request.settings.flow_steps = motionSteps;
+            if (seed >= 0)
+                request.settings.seed = seed;
             if (!string.IsNullOrWhiteSpace(image))
             {
                 if (!File.Exists(image))
@@ -93,6 +105,11 @@ namespace Assetgen.Editor
             }
 
             var client = new AssetgenClient();
+            if (!AssetgenServer.Owned || !await Answers(client, cmd))
+            {
+                cmd.Log.Info("Making sure the assetgen server is running.");
+                await AssetgenServer.EnsureRunningAsync(cmd.CancellationToken);
+            }
             var job = await client.SubmitAsync(request, cmd.CancellationToken);
             cmd.Log.Info($"Started {job.id}.");
             if (!wait)
@@ -272,6 +289,101 @@ namespace Assetgen.Editor
             }
             cmd.Result.Write(new { target = found.name, clip, speed = found.Speed });
             return ExitCode.Success;
+        }
+
+        [CliGroupCommand(ServerGroup,
+            "Start the local assetgen server (server.py) and wait until it answers. Uses the folder, Python and " +
+            "arguments in Project Settings > Assetgen. Does nothing when a server already answers.",
+            Effect = CommandEffect.Idempotent, Name = "start")]
+        internal static async Task<ExitCode> ServerStart(CommandContext cmd)
+        {
+            var client = new AssetgenClient();
+            var already = await Answers(client, cmd);
+            if (!already)
+            {
+                var reason = AssetgenServer.CannotStartReason;
+                if (reason != null)
+                {
+                    cmd.Log.Error(reason);
+                    return ExitCode.Failed;
+                }
+                AssetgenServer.Start();
+                await AssetgenServer.WaitUntilReadyAsync(client, cmd.CancellationToken);
+            }
+            WriteServer(cmd, client, await client.InfoAsync(cmd.CancellationToken), already ? "already running" : "started");
+            return ExitCode.Success;
+        }
+
+        [CliGroupCommand(ServerGroup, "Stop the assetgen server this Editor started, with the stage it is running.",
+            Effect = CommandEffect.Destructive, Name = "stop")]
+        internal static ExitCode ServerStop(CommandContext cmd)
+        {
+            if (!AssetgenServer.Owned)
+            {
+                cmd.Log.Warning("This Editor did not start a server, so there is none to stop.");
+                cmd.Result.Write(new { state = "not started by this Editor" });
+                return ExitCode.Success;
+            }
+            AssetgenServer.Stop();
+            cmd.Result.Write(new { state = "stopped" });
+            return ExitCode.Success;
+        }
+
+        [CliGroupCommand(ServerGroup, "Whether the assetgen server answers, and whether this Editor started it.",
+            Effect = CommandEffect.ReadOnly, Name = "status")]
+        internal static async Task<ExitCode> ServerStatus(CommandContext cmd)
+        {
+            var client = new AssetgenClient();
+            ServerInfo info = null;
+            try
+            {
+                info = await client.InfoAsync(cmd.CancellationToken);
+            }
+            catch (Exception e) when (!(e is OperationCanceledException) || !cmd.CancellationToken.IsCancellationRequested)
+            {
+                // reported as not answering
+            }
+            var state = info != null ? "running" : AssetgenServer.Owned ? "starting" : "stopped";
+            WriteServer(cmd, client, info, state);
+            return ExitCode.Success;
+        }
+
+        [CliGroupCommand(ServerGroup, "The last lines of the server's log (the server Unity started).",
+            Effect = CommandEffect.ReadOnly, Name = "log")]
+        internal static ExitCode ServerLog(CommandContext cmd, [CliArg("lines", "How many lines")] int lines = 40)
+        {
+            cmd.Result.Write(new { path = AssetgenServer.LogPath, log = AssetgenServer.LogTail(Math.Max(1, lines)) });
+            return ExitCode.Success;
+        }
+
+        static void WriteServer(CommandContext cmd, AssetgenClient client, ServerInfo info, string state)
+        {
+            cmd.Result.Write(new
+            {
+                state,
+                url = client.BaseUrl,
+                startedByEditor = AssetgenServer.Owned,
+                process = AssetgenServer.Process?.Id,
+                version = info?.version,
+                devices = info?.devices,
+                imageBackend = info?.image_backend?.backend,
+                folder = AssetgenServer.ResolvedFolder,
+                python = AssetgenServer.ResolvedPython(AssetgenServer.ResolvedFolder),
+                log = AssetgenServer.LogPath,
+            });
+        }
+
+        static async Task<bool> Answers(AssetgenClient client, CommandContext cmd)
+        {
+            try
+            {
+                await client.InfoAsync(cmd.CancellationToken);
+                return true;
+            }
+            catch (Exception e) when (!(e is OperationCanceledException) || !cmd.CancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
         }
 
         static async Task<ExitCode> Finish(CommandContext cmd, AssetgenClient client, string id)

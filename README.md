@@ -176,7 +176,9 @@ goblin.Play("casts_a_spell");             // a one-shot; returns to Locomotion b
 ```
 
 **Window > Assetgen** generates from inside the Editor: describe or pick a picture, choose motions (or a preset),
-press Generate. The character lands in `Assets/Characters/` when it's done.
+press Generate. The character lands in `Assets/Characters/` when it's done. There's no server to start by hand: Unity
+runs `server.py` in the background when it's needed, shows its state with Start/Stop/Restart/Log, and stops it with
+the Editor. Steps, seed, prompt strength and the mesh budgets are under **Advanced**.
 
 **For agents.** With the [Unity CLI](https://docs.unity.com/en-us/unity-cli) and its Pipeline package in the
 project, the package adds an `assetgen` command group to the running Editor:
@@ -299,7 +301,8 @@ travel is removed and its speed goes into the character file (and the clip's glT
 character to match. `--root-motion` keeps the travel, for engines that drive movement from the root bone. `--loop off`
 turns looping off; `--loop 120` makes 120-frame (4 s) loops, any length up to 600 frames.
 
-Other options: `--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3; try 5 to 7
+Other options: `--idol-steps` (Idol's sampling steps, default 50) and `--flow-steps` (motion sampler steps, default 32),
+`--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3; try 5 to 7
 when a prompt is ignored), `--rig-class mixamo` (force a Mixamo-template skeleton on a humanoid), `--num-beams`
 (SkinTokens beam width, default 10), `--faces` / `--texture` / `--voxels` (mesh budget),
 `--llm-base-url http://localhost:8080/v1` (label joints with a local llama.cpp server), `--mode real` (photographs).
