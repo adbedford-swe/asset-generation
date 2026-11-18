@@ -81,7 +81,7 @@ def build(default_device: str | None = None):
     devices = device_choices()
 
     def start(image, ply, reference, name, prompts, height, device, mode, seed, repetitions, faces, texture, voxels,
-              beams, rig_class, cfg_scale, llm_url):
+              beams, candidates, rig_class, cfg_scale, llm_url):
         if not image and not ply:
             raise gr.Error("Upload an image, or a splat (.ply).")
         stem = Path(ply or image).stem
@@ -93,7 +93,8 @@ def build(default_device: str | None = None):
                     reference=Path(reference) if (ply and reference) else None, name=name, device=device, mode=mode,
                     seed=int(seed), prompts=[p.strip() for p in prompts.splitlines() if p.strip()],
                     repetitions=int(repetitions), height=float(height) if height else None,
-                    rig_class=rig_class or None, num_beams=int(beams), mesh_args=mesh_args,
+                    rig_class=rig_class or None, num_beams=int(beams), rig_candidates=int(candidates),
+                    mesh_args=mesh_args,
                     llm_base_url=llm_url or None, cfg_scale=float(cfg_scale) if cfg_scale else None)
 
         events: queue.Queue = queue.Queue()
@@ -173,6 +174,7 @@ def build(default_device: str | None = None):
                         voxels = gr.Number(value=256, precision=0, label="Fusion voxels")
                     with gr.Row():
                         beams = gr.Number(value=10, precision=0, minimum=1, label="SkinTokens beams")
+                        candidates = gr.Number(value=3, precision=0, minimum=1, label="Rig candidates")
                         rig_class = gr.Textbox(label="Rig template", placeholder="articulation (any shape)")
                         cfg_scale = gr.Number(value=3.0, label="Prompt strength")
                     llm_url = gr.Textbox(label="Joint-label LLM endpoint (optional)",
@@ -187,7 +189,7 @@ def build(default_device: str | None = None):
                 log = gr.Textbox(label="Log", lines=14, max_lines=14, autoscroll=True)
 
         go.click(start, [image, ply, reference, name, prompts, height, device, mode, seed, repetitions, faces,
-                         texture, voxels, beams, rig_class, cfg_scale, llm_url],
+                         texture, voxels, beams, candidates, rig_class, cfg_scale, llm_url],
                  [log, gallery, viewer, clip, download, folder])
         clip.change(pick_clip, [clip, folder], viewer)
     return demo

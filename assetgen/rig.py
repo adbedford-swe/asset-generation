@@ -97,10 +97,46 @@ def _install_runtime_patches():
     transformers.AutoModelForCausalLM.from_config = from_config
 
 
-def predict(mesh_path, device: str = "cuda", cls: str = "articulation", seed: int = 0, num_beams: int = 10,
+def longest_chain(parents: np.ndarray) -> int:
+    """Longest run of joints each of whose parent has exactly one child."""
+    children = np.bincount(parents[parents >= 0], minlength=len(parents))
+    run: dict[int, int] = {}
+
+    def run_length(j: int) -> int:
+        if j not in run:
+            p = int(parents[j])
+            run[j] = run_length(p) + 1 if p >= 0 and children[p] == 1 else 1
+        return run[j]
+
+    return max(run_length(j) for j in range(len(parents)))
+
+
+def score_rig(rig: Rig, vertices: np.ndarray, faces: np.ndarray) -> dict:
+    """Structural plausibility of a rig on a canonical (Y-up, facing +Z) mesh; higher is better.
+
+    inside: share of joints inside the mesh. symmetry: median distance from each joint's mirror
+    image (x -> -x) to the nearest joint, relative to the asset's size. longest_chain: SkinTokens
+    sometimes emits one endless chain instead of limbs. A rig with very few joints cannot animate much."""
+    import trimesh
+    from scipy.spatial import cKDTree
+
+    J = rig.joints.astype(np.float64)
+    size = float(np.ptp(vertices, axis=0).max()) or 1.0
+    try:
+        inside = float(trimesh.Trimesh(vertices, faces, process=False).contains(J).mean())
+    except Exception:
+        inside = 0.5
+    symmetry = float(np.median(cKDTree(J).query(J * np.array([-1.0, 1.0, 1.0]))[0])) / size
+    chain = longest_chain(rig.parents)
+    score = inside - 4.0 * symmetry - 0.05 * max(0, chain - 12) - (0.5 if len(J) < 8 else 0.0)
+    return {"score": round(score, 4), "inside": round(inside, 3), "symmetry": round(symmetry, 4),
+            "longest_chain": chain, "joints": int(len(J))}
+
+
+def predict(mesh_path, device: str = "cuda", cls: str = "articulation", seeds=(0,), num_beams: int = 10,
             top_k: int = 5, top_p: float = 0.95, temperature: float = 1.0, repetition_penalty: float = 2.0,
             postprocess: bool = False, log=print):
-    """Returns (TexturedMesh, Rig) with the rig in the mesh's own frame."""
+    """Returns (TexturedMesh, [Rig per seed], (welded vertices, faces)); rigs are in the mesh's own frame."""
     import torch
 
     mesh = load_textured_glb(mesh_path)
@@ -121,10 +157,6 @@ def predict(mesh_path, device: str = "cuda", cls: str = "articulation", seed: in
     from src.model.tokenrig import TokenRig
     from src.tokenizer.parse import get_tokenizer
 
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
     model = TokenRig.load_from_system_checkpoint(checkpoint_path=SKINTOKENS["checkpoint"]).to(device).eval()
     tokenizer = get_tokenizer(**model.tokenizer_config)
     transform = Transform.parse(**model.transform_config["predict_transform"])
@@ -143,30 +175,35 @@ def predict(mesh_path, device: str = "cuda", cls: str = "articulation", seed: in
     batch["generate_kwargs"] = dict(max_length=2048, top_k=top_k, top_p=top_p, temperature=temperature,
                                     repetition_penalty=repetition_penalty, num_return_sequences=1,
                                     num_beams=num_beams, do_sample=True)
-    log(f"[rig] generating on {device} (beams={num_beams}, class={cls})")
     # SkinTokens mixes float32 inputs with bfloat16 weights under CUDA autocast; on CPU use CPU autocast.
-    autocast = torch.autocast("cpu", dtype=torch.bfloat16) if torch.device(device).type == "cpu" else nullcontext()
-    with torch.no_grad(), autocast:
-        result = model.predict_step(batch, make_asset=True)["results"][0]
-    asset = result.asset
-    if postprocess:
-        voxel = asset.voxel(resolution=196)
-        asset.skin *= voxel_skin(grid=0, grid_coords=voxel.coords, joints=asset.joints,
-                                 vertices=asset.vertices, faces=asset.faces, mode="square",
-                                 voxel_size=voxel.voxel_size)
-        asset.normalize_skin()
+    on_cpu = torch.device(device).type == "cpu"
 
-    if len(asset.vertices) != len(verts):
-        raise RuntimeError(f"SkinTokens returned {len(asset.vertices)} vertices for {len(verts)} given")
-    s, t = fit_scale_shift(np.asarray(asset.vertices, dtype=np.float64), verts)
-    joints = s * np.asarray(asset.joints, dtype=np.float64) + t
-    names = list(result.detokenize_output.joint_names or [f"bone_{i}" for i in range(len(joints))])
-    weights = np.asarray(asset.skin, dtype=np.float64)[inverse]
-    weights /= np.maximum(weights.sum(1, keepdims=True), 1e-8)
-    rig = Rig(joints=joints.astype(np.float32), parents=np.asarray(asset.parents, dtype=np.int64),
-              names=unique_names(names), weights=weights.astype(np.float32))
-    log(f"[rig] {len(joints)} joints, class {result.detokenize_output.cls or 'none'}")
-    return mesh, rig
+    rigs = []
+    for seed in seeds:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        log(f"[rig] generating on {device} (seed={seed}, beams={num_beams}, class={cls})")
+        autocast = torch.autocast("cpu", dtype=torch.bfloat16) if on_cpu else nullcontext()
+        with torch.no_grad(), autocast:
+            result = model.predict_step(batch, make_asset=True)["results"][0]
+        asset = result.asset
+        if postprocess:
+            voxel = asset.voxel(resolution=196)
+            asset.skin *= voxel_skin(grid=0, grid_coords=voxel.coords, joints=asset.joints,
+                                     vertices=asset.vertices, faces=asset.faces, mode="square",
+                                     voxel_size=voxel.voxel_size)
+            asset.normalize_skin()
+        if len(asset.vertices) != len(verts):
+            raise RuntimeError(f"SkinTokens returned {len(asset.vertices)} vertices for {len(verts)} given")
+        s, t = fit_scale_shift(np.asarray(asset.vertices, dtype=np.float64), verts)
+        joints = s * np.asarray(asset.joints, dtype=np.float64) + t
+        names = list(result.detokenize_output.joint_names or [f"bone_{i}" for i in range(len(joints))])
+        weights = np.asarray(asset.skin, dtype=np.float64)[inverse]
+        weights /= np.maximum(weights.sum(1, keepdims=True), 1e-8)
+        rigs.append(Rig(joints=joints.astype(np.float32), parents=np.asarray(asset.parents, dtype=np.int64),
+                        names=unique_names(names), weights=weights.astype(np.float32)))
+    return mesh, rigs, (verts, faces)
 
 
 def main(argv=None) -> None:
@@ -177,9 +214,10 @@ def main(argv=None) -> None:
     ap.add_argument("--cls", default="articulation",
                     help="rig class the model is conditioned on: articulation (any shape), or a template such as mixamo")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--candidates", type=int, default=1, help="rigs to sample (seeds seed, seed+1, ...); best kept")
     ap.add_argument("--num_beams", type=int, default=10)
     ap.add_argument("--max_joints", type=int, default=70)
-    ap.add_argument("--postprocess", action="store_true", help="SkinTokens' voxel skin clean-up")
+    ap.add_argument("--postprocess", action="store_true", help="SkinTokens voxel skin clean-up")
     args = ap.parse_args(argv)
     from .device import use_device
 
@@ -187,7 +225,15 @@ def main(argv=None) -> None:
     out = Path(args.out).resolve()
     mesh_path = Path(args.mesh).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
-    mesh, rig = predict(mesh_path, args.device, args.cls, args.seed, args.num_beams, postprocess=args.postprocess)
+    seeds = list(range(args.seed, args.seed + max(1, args.candidates)))
+    mesh, rigs, (verts, faces) = predict(mesh_path, args.device, args.cls, seeds, args.num_beams,
+                                         postprocess=args.postprocess)
+    scores = [score_rig(r, verts, faces) for r in rigs]
+    for seed, sc in zip(seeds, scores):
+        print(f"[rig] seed {seed}: {sc}")
+    best = int(np.argmax([sc["score"] for sc in scores]))
+    rig = rigs[best]
+    print(f"[rig] keeping seed {seeds[best]}: {len(rig.joints)} joints")
     if len(rig.joints) > args.max_joints:
         j, p, n, w = merge_small_leaves(rig.joints, rig.parents, rig.names, rig.weights, args.max_joints)
         print(f"[rig] merged {len(rig.joints) - len(j)} leaf joints to fit {args.max_joints}")
@@ -199,8 +245,9 @@ def main(argv=None) -> None:
 
     Image.fromarray(rig_preview(mesh.vertices, mesh.faces, mesh.uvs, mesh.texture, rig.joints, rig.parents)).save(
         out.with_name("preview.png"))
-    (out.with_suffix(".json")).write_text(json.dumps({
-        "joints": rig.joints.tolist(), "parents": rig.parents.tolist(), "names": rig.names}, indent=1))
+    out.with_suffix(".json").write_text(json.dumps({
+        "joints": rig.joints.tolist(), "parents": rig.parents.tolist(), "names": rig.names,
+        "seed": seeds[best], "candidates": [{"seed": sd, **sc} for sd, sc in zip(seeds, scores)]}, indent=1))
     print(f"[rig] wrote {out}")
 
 
