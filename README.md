@@ -63,6 +63,11 @@ each stage's preview appears as it finishes (front view, splat against mesh, ske
 finished asset plays in an interactive 3D viewer with a clip picker and a download link. Runs land in
 `outputs/webui/<time>-<name>/`, laid out like `assetgen run`, so the CLI can resume them.
 
+**Continue a run** picks up an earlier run from any stage: keep a mesh you like and re-rig it, or keep the
+rig and generate different motions. Selecting a run shows its results; *Run from this stage* copies its
+results up to that stage into a new run folder and runs the rest with the current settings, so the run you
+started from is never changed and you can branch it as often as you like.
+
 Each stage runs in its own process, so GPU memory is released between models, and logs to
 `<out>/logs/<stage>.log`. A stage is skipped when its outputs exist and it last ran with the same arguments.
 Once a stage runs, every later stage runs too.
