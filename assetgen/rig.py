@@ -82,6 +82,9 @@ def _install_runtime_patches():
 
     if not hasattr(normalization, "LayerNorm"):
         normalization.LayerNorm = torch.nn.LayerNorm
+    if not torch.cuda.is_available():
+        # SkinTokens asks for the GPU's name at import time (to decide on FlashAttention 3).
+        torch.cuda.get_device_name = lambda *args, **kwargs: "cpu"
 
     original = transformers.AutoModelForCausalLM.from_config
 
