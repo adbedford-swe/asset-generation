@@ -136,14 +136,15 @@ def build(default_device: str | None = None):
 
     devices = device_choices()
 
-    def settings(prompts, height, device, seed, repetitions, faces, texture, voxels, beams, candidates, rig_class,
-                 cfg_scale, llm_url) -> dict:
+    def settings(prompts, height, device, loop, root_motion, seed, repetitions, faces, texture, voxels, beams,
+                 candidates, rig_class, cfg_scale, llm_url) -> dict:
         return dict(device=device, seed=int(seed), prompts=[p.strip() for p in prompts.splitlines() if p.strip()],
                     repetitions=int(repetitions), height=float(height) if height else None,
                     rig_class=rig_class or None, num_beams=int(beams), rig_candidates=int(candidates),
                     mesh_args=["--target_faces", str(int(faces)), "--texture_size", str(int(texture)),
                                "--resolution", str(int(voxels))],
-                    llm_base_url=llm_url or None, cfg_scale=float(cfg_scale) if cfg_scale else None)
+                    llm_base_url=llm_url or None, cfg_scale=float(cfg_scale) if cfg_scale else None,
+                    loop="auto" if loop else "off", root_motion=bool(root_motion))
 
     def execute(o: Options, start: str | None, header: str):
         """Run the pipeline in a thread and stream log, previews and the asset into the page."""
@@ -262,7 +263,13 @@ def build(default_device: str | None = None):
                     go_continue = gr.Button("Run from this stage", variant="primary")
                 name = gr.Textbox(label="Name (new runs)", placeholder="from the file name")
                 prompts = gr.Textbox(value="\n".join(DEFAULT_PROMPTS), lines=4, label="Motions, one per line",
-                                     info='Start with "An object" and describe one motion.')
+                                     info='Start with "An object" and describe one motion. Clips loop seamlessly; '
+                                          'end a line with [once] for a one-shot (attack, jump).')
+                with gr.Row():
+                    loop = gr.Checkbox(value=True, label="Seamless loops",
+                                       info="Loop length follows each motion's own cycle")
+                    root_motion = gr.Checkbox(value=False, label="Keep root motion",
+                                              info="Off: loops play in place; their speed is in the clip's extras")
                 with gr.Row():
                     height = gr.Number(value=1.8, label="Height (m)", minimum=0.01)
                     device = gr.Dropdown(devices, value=default_device or devices[0], label="Device")
@@ -289,8 +296,8 @@ def build(default_device: str | None = None):
                 gallery = gr.Gallery(label="Stages", columns=2, height=360, object_fit="contain")
                 log = gr.Textbox(label="Log", lines=14, max_lines=14, autoscroll=True)
 
-        common = [prompts, height, device, seed, repetitions, faces, texture, voxels, beams, candidates, rig_class,
-                  cfg_scale, llm_url]
+        common = [prompts, height, device, loop, root_motion, seed, repetitions, faces, texture, voxels, beams,
+                  candidates, rig_class, cfg_scale, llm_url]
         outputs = [log, gallery, viewer, clip, download, folder, runs]
         go.click(start_new, [image, gr.State(None), gr.State(None), name, mode, *common], outputs)
         go_splat.click(start_new, [gr.State(None), ply, reference, name, mode, *common], outputs)

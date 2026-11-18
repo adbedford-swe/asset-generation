@@ -25,7 +25,14 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--device", default="cuda", help="cuda, cuda:N (ROCm GPUs are cuda devices) or cpu")
     ap.add_argument("--mode", default="synthetic", choices=["synthetic", "real"], help="Idol input type")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--prompt", nargs="+", default=[], help='motion prompts, each "An object <does one thing>."')
+    ap.add_argument("--prompt", nargs="+", default=[],
+                    help='motion prompts, each "An object <does one thing>."; each loops unless it ends in "[once]"')
+    ap.add_argument("--loop", default="auto",
+                    help="auto: loop length from each motion's own cycle; off; or a loop length in frames (30 fps)")
+    ap.add_argument("--root-motion", action="store_true",
+                    help="keep looping clips' root travel (default: they loop in place, speed in the clip's extras)")
+    ap.add_argument("--flow-steps", type=int, default=None, help="motion sampler steps (default 32)")
+    ap.add_argument("--fbx", action="store_true", help="also export every clip as FBX")
     ap.add_argument("--repetitions", type=int, default=1, help="motions per prompt")
     ap.add_argument("--height", type=float, default=None, help="final asset height in metres")
     ap.add_argument("--rig-class", default=None, help="force a SkinTokens rig template (e.g. mixamo, vroid)")
@@ -56,7 +63,8 @@ def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path
                    device=device, mode=a.mode, seed=a.seed, prompts=a.prompt, repetitions=a.repetitions,
                    height=a.height, rig_class=a.rig_class, num_beams=a.num_beams, rig_candidates=a.rig_candidates,
                    skin_postprocess=a.skin_postprocess, mesh_args=mesh_args, llm_base_url=a.llm_base_url,
-                   llm_model=a.llm_model, cfg_scale=a.cfg_scale)
+                   llm_model=a.llm_model, cfg_scale=a.cfg_scale, loop=a.loop, root_motion=a.root_motion,
+                   flow_steps=a.flow_steps, fbx=a.fbx)
 
 
 def cmd_run(a) -> None:

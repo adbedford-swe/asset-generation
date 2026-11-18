@@ -47,7 +47,60 @@ def append_accessor(doc, blob: bytearray, data: np.ndarray, like) -> int:
     return len(doc.accessors) - 1
 
 
-def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, log=print) -> dict:
+def _rest_world(doc, node: int) -> np.ndarray:
+    """World matrix of ``node`` in the rest pose (from the nodes' own TRS)."""
+    parent = {c: i for i, n in enumerate(doc.nodes) for c in (n.children or [])}
+    chain = []
+    while node is not None:
+        chain.append(node)
+        node = parent.get(node)
+    m = np.eye(4)
+    for i in reversed(chain):
+        n = doc.nodes[i]
+        x, y, z, w = n.rotation or [0.0, 0.0, 0.0, 1.0]
+        r = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                      [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                      [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+        local = np.eye(4)
+        local[:3, :3] = r * np.asarray(n.scale or [1.0, 1.0, 1.0])[None, :]
+        local[:3, 3] = n.translation or [0.0, 0.0, 0.0]
+        m = m @ local
+    return m
+
+
+def skeleton_root(doc) -> int:
+    joints = set(doc.skins[0].joints)
+    parent = {c: i for i, n in enumerate(doc.nodes) for c in (n.children or [])}
+    return next(j for j in doc.skins[0].joints if parent.get(j) not in joints)
+
+
+def loop_root_motion(doc, blob: bytearray, anim, in_place: bool) -> list[float]:
+    """Horizontal root velocity of a looping clip (world units per second). With ``in_place`` the
+    root's horizontal travel is removed, so the last frame equals the first in every channel."""
+    root = skeleton_root(doc)
+    parent = {c: i for i, n in enumerate(doc.nodes) for c in (n.children or [])}
+    to_world = _rest_world(doc, parent[root])[:3, :3] if root in parent else np.eye(3)
+    for ch in anim.channels:
+        if ch.target.node != root or ch.target.path != "translation":
+            continue
+        sampler = anim.samplers[ch.sampler]
+        times = read_accessor(doc, bytes(blob), sampler.input)[:, 0].astype(np.float64)
+        local = read_accessor(doc, bytes(blob), sampler.output).astype(np.float64)
+        duration = float(times[-1] - times[0]) or 1.0
+        world = local @ to_world.T
+        travel = world[-1] - world[0]
+        travel[1] = 0.0  # height belongs to the motion (bobbing, crouching), not to travel
+        velocity = (travel / duration).tolist()
+        if in_place:
+            ramp = ((times - times[0]) / duration)[:, None]
+            local -= (ramp * travel[None, :]) @ np.linalg.inv(to_world).T
+            sampler.output = append_accessor(doc, blob, local.astype(np.float32), doc.accessors[sampler.output])
+        return velocity
+    return [0.0, 0.0, 0.0]
+
+
+def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, root_motion: bool = False,
+                log=print) -> dict:
     import pygltflib as gl
 
     base = gl.GLTF2.load_binary(clips[0]["glb"])
@@ -65,7 +118,7 @@ def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, 
 
     from .animate import clip_name
 
-    animations = []
+    animations, sources = [], []
     for ci, clip in enumerate(clips):
         doc = base if ci == 0 else gl.GLTF2.load_binary(clip["glb"])
         src_blob = blob if ci == 0 else doc.binary_blob()
@@ -73,6 +126,7 @@ def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, 
             if ci == 0:
                 anim.name = unique(clip_name(clip["prompt"]))
                 animations.append(anim)
+                sources.append(clip)
                 continue
             samplers, channels = [], []
             for s in anim.samplers:
@@ -87,11 +141,25 @@ def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, 
                     node=target, path=c.target.path)))
             animations.append(gl.Animation(name=unique(clip_name(clip["prompt"])), samplers=samplers,
                                            channels=channels))
+            sources.append(clip)
     base.animations = animations
 
+    velocities = {}
+    for anim, clip in zip(animations, sources):
+        if clip.get("loop"):
+            velocities[anim.name] = loop_root_motion(base, blob, anim, in_place=not root_motion)
     info = {"clips": [a.name for a in animations]}
+    scale = 1.0
     if height is not None:
-        info["scale"] = _scale_to_height(base, blob, height)
+        scale = info["scale"] = _scale_to_height(base, blob, height)
+    for anim, clip in zip(animations, sources):
+        extras = {"prompt": clip["prompt"], "loop": bool(clip.get("loop"))}
+        if clip.get("loop"):
+            extras["loop_frames"] = clip.get("loop_frames")
+            extras["root_motion"] = "kept" if root_motion else "in_place"
+            extras["root_velocity"] = [round(v * scale, 5) for v in velocities[anim.name]]
+        anim.extras = extras
+    info["animations"] = {a.name: a.extras for a in animations}
     base.buffers[0].byteLength = len(blob)
     base.set_binary_blob(bytes(blob))
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,13 +195,23 @@ def main(argv=None) -> None:
     ap.add_argument("--clips", required=True, help="clips.json written by the animate stage")
     ap.add_argument("--out", required=True)
     ap.add_argument("--height", type=float, default=None)
+    ap.add_argument("--root_motion", action="store_true",
+                    help="keep the root travel of looping clips instead of making them loop in place")
     a = ap.parse_args(argv)
     out = Path(a.out)
-    merge_clips(json.loads(Path(a.clips).read_text()), out, a.height)
+    info = merge_clips(json.loads(Path(a.clips).read_text()), out, a.height, root_motion=a.root_motion)
     from PIL import Image
 
-    from .gltf_anim import contact_sheet
+    from .gltf_anim import AnimatedGLB, contact_sheet, loop_seam
 
+    g = AnimatedGLB(out)
+    for i, anim_name in enumerate(g.animations):
+        if info["animations"][anim_name].get("loop"):
+            seam = loop_seam(g, i)
+            info["animations"][anim_name]["seam"] = seam
+            print(f"[finalize] loop {anim_name}: seam position {seam['position']:.1e} of the asset size, "
+                  f"seam roughness {seam['roughness']:.2f} x the rest of the clip")
+    out.with_suffix(".json").write_text(json.dumps(info, indent=2))
     Image.fromarray(contact_sheet(out)).save(out.with_suffix(".png"))
     print(f"[finalize] clip contact sheet: {out.with_suffix('.png')}")
 

@@ -5,8 +5,9 @@
   creating the F-curves (which is what creates the slot), so the armature is left
   on no slot: nothing moves and the glTF exporter writes no animation. The slot is
   assigned once the action is built.
-* Always: the released checkpoint's config samples on ``cuda``; without a GPU,
-  sample on the CPU instead.
+* Otherwise (the sampler): the released checkpoint's config samples on ``cuda``;
+  without a GPU, sample on the CPU instead. Sampling goes through
+  ``assetgen.motion_sampler`` (fixed-step solve, seamless loops).
 
     python -m assetgen.unimate_compat [--blender] <script.py | -m module> [args...]
 """
@@ -63,6 +64,9 @@ def main() -> None:
     args = sys.argv[1:]
     if args[0] != "--blender":
         _patch_device()
+        from .motion_sampler import install
+
+        install()
         _run(args)
         return
     # bpy as a module tears itself down badly: it reports leaked blocks, then crashes (Windows) or

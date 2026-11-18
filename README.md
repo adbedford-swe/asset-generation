@@ -73,7 +73,16 @@ Each stage runs in its own process, so GPU memory is released between models, an
 Once a stage runs, every later stage runs too.
 
 Prompts follow UniMate's training captions: start with "An object" and describe one motion ("An object
-jumps in place.", not "A demon jumps."). Without `--prompt` you get idle, walk, run and attack.
+jumps in place.", not "A demon jumps."). Without `--prompt` you get idle, walk and run loops and a one-shot
+attack.
+
+**Loops.** Every clip loops seamlessly unless its prompt ends in `[once]` (`"An object attacks forward. [once]"`).
+A looping clip's last frame is its first, and the motion through the seam is as smooth as anywhere else in it.
+By default loops play in place: a walk's forward travel is removed, and the speed it walked at is stored in the
+clip's glTF `extras` (`root_velocity`, m/s, with `loop` and `loop_frames`) so game code can move the character
+to match. `--root-motion` keeps the travel instead, for engines that drive movement from the root bone.
+`--loop off` turns looping off; `--loop 40` forces a 40-frame loop (30 fps). Finalize measures every seam and
+writes it, with the clips' metadata, to `<name>.json`.
 
 Useful options: `--repetitions N` (several samples per prompt), `--cfg-scale` (prompt strength, default 3,
 try 5 to 7 when a prompt is ignored), `--rig-class mixamo` (force a Mixamo-template skeleton on a humanoid),
@@ -110,7 +119,11 @@ uniform scale and shift of the same vertices). flash-attn is replaced by an SDPA
 backbone uses SDPA, so nothing CUDA-only is needed. Rigs over UniMate's 70-joint budget get their
 lightest leaf bones folded into their parents.
 
-**Motion.** UniMate's `rig_preprocess` runs without stopping for review. The facing pair it needs comes
+**Motion.** Sampling uses a fixed-step solve (32 Euler steps) instead of UniMate's adaptive dopri5 at
+atol 1e-6: on the same noise, 50 steps differ from dopri5 by 0.3-1.2% of the features' spread and 25 steps by
+0.5-2.4%, at a third to a seventh of the time. All clips are driven in one Blender session, GLB only unless
+`--fbx` is given. The rig's UniMate preparation is reused when the rig and its settings have not changed, which
+is what continuing a run from the motion stage hits. UniMate's `rig_preprocess` runs without stopping for review. The facing pair it needs comes
 from geometry: since the asset faces +Z, it is the most clearly mirrored pair of joints near the root,
 with the right-hand one at -X. Joint labels come from UniMate's offline rules (geometric labels for
 SkinTokens' unnamed bones) or an LLM. UniMate was written for bpy 4.0. Under bpy 4.5 its rebuilt actions
@@ -118,8 +131,21 @@ were left on no action slot (the 4.4 animation system), which exported clips wit
 `assetgen.unimate_compat` assigns the slot. bpy can also crash while the interpreter shuts down after its
 files are written; the stage checks for the files instead of trusting that exit code.
 
+**Loops.** UniMate's flow is linear, `x_t = (1-t) noise + t x1`, so each sampling step can be written as
+"predict the clean motion, then move to the next noise level". `assetgen.motion_sampler` makes the predicted
+clean motion periodic before each move: frames t, t+L, t+2L of the 60-frame window are replaced by their mean.
+All of UniMate's per-frame features are independent of world position (root-relative joint positions, local
+rotations, facing-frame velocities, root height), so equal features mean the same pose moving the same way,
+while the root still travels. The model shapes the whole motion around the constraint at every step, so the
+loop is generated, not blended: at the end the window is exactly periodic and frames 0..L play as a loop whose
+seam matches in position, velocity and acceleration. L comes from the motion itself: a quick first pass reveals
+its cycle (autocorrelation of the joints' features) and L is the largest whole number of cycles that fits, or the
+window less a margin for motions without a cycle. On a test fox, looped clips close to within 1e-7 of the asset's
+size with a seam smoother than 95% of the clip's other frames; an unlooped clip misses by a tenth of its size.
+
 **Finalize.** Every clip drives the same canonical asset, so the clips' animations are merged into one
-file by node name and named after their prompts. `--height` scales the armature root.
+file by node name and named after their prompts. Looping clips are made to loop in place (or keep their root
+motion) and get their metadata. `--height` scales the armature root.
 
 ## Development
 
