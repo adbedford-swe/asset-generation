@@ -1,9 +1,5 @@
-<!--
-  HEADER IMAGE: a looping GIF of the web UI and Unity side by side, a sentence typed in, the character
-  appearing stage by stage, then walking around a Unity scene. Save it as docs/header.gif and replace this
-  comment with:
-  <p align="center"><img src="docs/header.gif" alt="assetgen: a sentence in, an animated character in Unity" width="100%"></p>
--->
+<!-- Header: replace docs/header.svg with docs/header.gif, the web UI and Unity side by side. -->
+<p align="center"><img src="docs/header.svg" alt="assetgen: a sentence in, an animated character in Unity" width="100%"></p>
 
 <h1 align="center">assetgen</h1>
 
@@ -14,11 +10,25 @@
   Open models, one GPU, no artist in the loop. <i>Experimental.</i>
 </p>
 
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#text-to-image-bring-your-own-generator">Text to image</a> ·
+  <a href="#the-server">Server &amp; API</a> ·
+  <a href="#unity">Unity</a> ·
+  <a href="#godot">Godot</a> ·
+  <a href="#for-llm-agents-and-scripts">Agents</a> ·
+  <a href="#how-it-works-and-why">How it works</a>
+</p>
+
 ---
 
-```bash
-python server.py
-```
+Stable Diffusion made "describe it and see it" normal for pictures. assetgen tries the same for the thing a game
+actually needs: a character that stands on the ground, faces forward, has bones, and walks, runs, idles and attacks
+in loops that never pop.
+
+It's a tight chain of open research models (Idol, SkinTokens and UniMate) plus whichever image generator you already
+run, wrapped so the result drops into an engine and *works*. The right clips loop, a locomotion blend tree runs at
+the speeds the clips were generated at, and there's a prefab you can drag into a scene.
 
 ```
 "a goblin shaman with a lantern and a hooded cloak"
@@ -31,12 +41,15 @@ python server.py
         └── finalize     goblin.glb  +  goblin.assetgen  →  Unity prefab · Godot scene · any glTF engine
 ```
 
-Stable Diffusion made "describe it and see it" normal for pictures. assetgen tries the same for the thing a game
-actually needs: a character that stands on the ground, faces forward, has bones, and walks, runs, idles and attacks
-in loops that never pop. It's a tight chain of open research models: Idol, SkinTokens and UniMate, plus whichever
-image generator you already run. That chain is wrapped so the output drops into an engine and *works*: the right
-clips loop, a locomotion blend tree runs at the speeds the clips were generated at, and there's a prefab you can
-drag into a scene.
+<table>
+  <tr>
+    <td width="24%" align="center"><img src="docs/fox_input.png" alt="input: a picture of a fox"><br><sub>one picture in</sub></td>
+    <td align="center"><img src="docs/fox_clips.png" alt="four generated clips of the fox"><br>
+      <sub>out: a rigged fox and four clips from four sentences. Top to bottom: <i>jumps in place</i> (once),
+      <i>runs forward</i>, <i>stands idle and breathes</i>, <i>walks forward</i>. 0.6 m tall; Unity and Godot blend
+      idle → walk → run at 0, 0.22 and 0.47 m/s.</sub></td>
+  </tr>
+</table>
 
 ## What you get
 
@@ -163,7 +176,7 @@ press Generate. The character lands in `Assets/Characters/` when it's done.
 project, the package adds an `assetgen` command group to the running Editor:
 
 ```bash
-unity command assetgen generate --prompt "a goblin shaman with a lantern" --wait --timeout 1800
+unity command assetgen generate --prompt "a goblin shaman with a lantern" --wait true --timeout 1800
 unity command assetgen spawn --character a_goblin_shaman_with_a_lantern --position 0,0,3 --speed 0.5
 unity command assetgen list
 ```
@@ -209,7 +222,7 @@ motion; this file says what an engine needs to know about them:
   "locomotion": {"idle": "stands_idle_and_breathes",
                  "blend": [{"clip": "stands_idle_and_breathes", "speed": 0}, {"clip": "walks_forward", "speed": 0.219},
                            {"clip": "runs_forward", "speed": 0.466}]},
-  "source": {"prompt": "a red fox"},
+  "source": {"image": "fox_input.png"},
   "license": {"motion": "CC-BY-NC-4.0", "note": "..."}
 }
 ```
@@ -363,3 +376,6 @@ addon on a real Godot.
 
 Idol is Apache-2.0 and SkinTokens is MIT. UniMate's code is MIT, but its released checkpoints are CC BY-NC 4.0, so
 characters animated with them are for non-commercial use; every character file says so.
+
+The fox in `docs/` began as the Khronos glTF sample Fox (low-poly fox by PixelMannen, CC0): `assetgen synth` turned
+it into a splat and a picture, and its mesh, rig and clips above were generated from those.
