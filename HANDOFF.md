@@ -26,8 +26,12 @@ It replaces the earlier `pipeline/` scripts entirely; those had these defects:
 
 ## Verified, and where
 
+**On the ROCm machine** (2x RX 7900 XTX): the owner ran the pipeline and the web UI end to end and reported it
+working, after reporting and getting fixed the motion stage stalling once Blender had exported (PR #3); that covers
+main up to the continue-a-run feature (PR #4). The loop and speed work (PR #5) has not been run there yet.
+
 Everything below ran on the development laptop: **Windows 11, an NVIDIA RTX 500 Ada (4 GB) on CUDA
-(torch 2.14.1+cu130), bpy 4.5.16**. **Nothing has run on the ROCm machine yet.** The code has no
+(torch 2.14.1+cu130), bpy 4.5.16**. The code has no
 CUDA-only parts (no compiled extensions; flash-attn replaced by SDPA), and `uv.lock` resolves Linux to
 `torch 2.14.1+rocm7.2` and `triton-rocm 3.8.0`. But resolving is not installing, and installing is not
 running.
