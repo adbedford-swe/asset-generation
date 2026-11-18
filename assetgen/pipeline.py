@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -22,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 STAGES = ["generate", "mesh", "rig", "animate", "finalize"]
+ANSI = re.compile(r"\[[0-9;]*[A-Za-z]")  # colour codes some stages print
 
 
 @dataclass
@@ -98,6 +100,10 @@ def run(o: Options, start: str | None = None, stop: str | None = None, force: bo
     (out / "logs").mkdir(parents=True, exist_ok=True)
     manifest_path = out / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"stages": {}}
+    # What the run was made from, so it can be continued later (see run_inputs).
+    (out / "run.json").write_text(json.dumps({
+        "image": str(o.image) if o.image else None, "ply": str(o.ply) if o.ply else None,
+        "reference": str(o.reference) if o.reference else None, "name": o.name, "mode": o.mode}, indent=2))
     cmds = stage_commands(o)
     order = [s for s in STAGES if s in cmds]
     if start:
@@ -124,7 +130,7 @@ def run(o: Options, start: str | None = None, stop: str | None = None, force: bo
             proc = subprocess.Popen([sys.executable, "-m", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     env=child_env(), text=True, encoding="utf-8", errors="replace")
             for line in proc.stdout:
-                stamped = f"{time.time() - t0:7.1f}s  {line}"
+                stamped = f"{time.time() - t0:7.1f}s  {ANSI.sub('', line)}"
                 fh.write(stamped)
                 fh.flush()
                 if "Warning" not in line and not line.lstrip().startswith("warnings.warn"):
@@ -136,3 +142,51 @@ def run(o: Options, start: str | None = None, stop: str | None = None, force: bo
             raise SystemExit(f"stage {stage} failed (exit {code}); see {out / 'logs' / (stage + '.log')}")
         log(f"   {stage} done in {time.time() - t0:.0f}s")
     return out / f"{o.name}.glb"
+
+
+STAGE_DIRS = {"generate": "0_splat", "mesh": "1_mesh", "rig": "2_rig", "animate": "3_motion"}
+
+
+def run_inputs(folder: Path) -> dict:
+    """What a run folder was made from: run.json, or for older runs, the arguments in its manifest."""
+    folder = Path(folder)
+    if (folder / "run.json").exists():
+        return json.loads((folder / "run.json").read_text())
+    stages = json.loads((folder / "manifest.json").read_text()).get("stages", {})
+
+    def arg(stage, flag):
+        args = stages.get(stage, {}).get("args", [])
+        return args[args.index(flag) + 1] if flag in args else None
+
+    return {"image": arg("generate", "--image"), "ply": None if "generate" in stages else arg("mesh", "--ply"),
+            "reference": None if "generate" in stages else arg("mesh", "--reference"),
+            "name": arg("animate", "--name") or folder.name, "mode": arg("generate", "--mode") or "synthetic"}
+
+
+def completed_stages(folder: Path) -> list[str]:
+    """Stages of a run folder that finished, in pipeline order."""
+    path = Path(folder) / "manifest.json"
+    if not path.exists():
+        return []
+    stages = json.loads(path.read_text()).get("stages", {})
+    return [s for s in STAGES if stages.get(s, {}).get("ok")]
+
+
+def branch(source: Path, start: str, target: Path) -> Path:
+    """A new run folder holding ``source``'s results for every stage before ``start``, so the run
+    can continue from ``start`` without touching ``source``."""
+    import shutil
+
+    source, target = Path(source), Path(target)
+    done = completed_stages(source)
+    needed = [s for s in STAGES[:STAGES.index(start)] if s != "generate" or s in done]
+    missing = [s for s in needed if s not in done]
+    if missing:
+        raise SystemExit(f"{source.name} has not finished {', '.join(missing)}; start from {missing[0]} instead")
+    target.mkdir(parents=True)
+    for d in ["input", *[STAGE_DIRS[s] for s in needed]]:
+        if (source / d).exists():
+            shutil.copytree(source / d, target / d)
+    stages = json.loads((source / "manifest.json").read_text())["stages"]
+    (target / "manifest.json").write_text(json.dumps({"stages": {s: stages[s] for s in needed}}, indent=2))
+    return target
