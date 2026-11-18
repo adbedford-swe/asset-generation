@@ -78,6 +78,8 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
                 args += [flag, value]
         if not spec.style:
             args.append("--raw")
+        if spec.keep_loaded:
+            args.append("--keep_loaded")
         cmds["image"] = (args, [image])
     ply = (o.ply.resolve() if o.ply else splat / "splat.ply")
     reference = o.reference.resolve() if o.reference else (splat / "input.png" if image else None)

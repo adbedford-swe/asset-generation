@@ -131,7 +131,7 @@ def build(manager: JobManager | None = None):
             raise gr.Error(f"Image size {size!r} is not WIDTHxHEIGHT")
         return ImageSpec(backend=backend or spec0.backend, url=url or None, model=model or None, width=width,
                          height=height, steps=int(steps) if steps else None, workflow=spec0.workflow,
-                         command=spec0.command)
+                         command=spec0.command, keep_loaded=spec0.keep_loaded)
 
     def exports_for(job) -> list[str]:
         from .export import export_zip

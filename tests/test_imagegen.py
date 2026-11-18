@@ -138,3 +138,98 @@ def test_image_stage_runs_before_generate(tmp_path):
     args = cmds["image"][0]
     assert args[:3] == ["assetgen.imagegen", "--prompt", "a goblin"] and "--steps" in args and "http://h:1" in args
     assert cmds["generate"][0][2] == str(Path(tmp_path).resolve() / "0_image" / "image.png")
+
+
+class StubSdServer(StubImageServer):
+    """sd-server with its model API: a model can be loaded, unloaded and reloaded by recipe."""
+    state: dict = {}
+
+    def do_GET(self):
+        if self.path == "/sdcpp/v1/models/status":
+            self._json(StubSdServer.state)
+        else:
+            super().do_GET()
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        StubImageServer.requests.append((self.path, body, None))
+        state = StubSdServer.state
+        if self.path == "/sdcpp/v1/models/unload":
+            StubSdServer.state = {"state": "empty", "recipe": None, "models": {}}
+            self._json(StubSdServer.state)
+        elif self.path == "/sdcpp/v1/models/load":
+            StubSdServer.state = {"state": "ready", "recipe": body["recipe"], "models": body.get("models", {})}
+            self._json(StubSdServer.state)
+        elif self.path == "/sdapi/v1/txt2img":
+            if state.get("state") != "ready":
+                self._json({"error": "No model is loaded", "code": "model_not_loaded"}, 503)
+                return
+            if state.pop("unload_before_next", False):  # another job unloads it first
+                StubSdServer.state = {"state": "empty", "recipe": None, "models": {}}
+                self._json({"error": "No model is loaded", "code": "model_not_loaded"}, 503)
+                return
+            self._json({"images": [base64.b64encode(png((1, 2, 3))).decode()], "parameters": body, "info": ""})
+        else:
+            self._json({"error": "not found"}, 404)
+
+
+@pytest.fixture
+def sd_server(monkeypatch, tmp_path):
+    monkeypatch.setattr(imagegen, "STATE_DIR", tmp_path / "state")
+    StubImageServer.requests = []
+    StubSdServer.state = {"state": "ready", "recipe": "sd15", "models": {"model": "sd15-q4_0.gguf"}}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), StubSdServer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def calls():
+    return [path for path, _, _ in StubImageServer.requests]
+
+
+def test_sdcpp_unloads_after_the_picture_and_loads_it_back(sd_server, tmp_path):
+    spec = ImageSpec(backend="sdcpp", url=sd_server)
+    imagegen.generate("a fox", spec, seed=1)
+    assert calls() == ["/sdapi/v1/txt2img", "/sdcpp/v1/models/unload"]
+    assert StubSdServer.state["state"] == "empty"
+    remembered = json.loads((tmp_path / "state" / "sdcpp_models.json").read_text())
+    assert remembered == {sd_server: {"recipe": "sd15", "models": {"model": "sd15-q4_0.gguf"}}}
+
+    StubImageServer.requests = []
+    imagegen.generate("a fox", spec, seed=2)  # a new run finds it unloaded
+    assert calls() == ["/sdcpp/v1/models/load", "/sdapi/v1/txt2img", "/sdcpp/v1/models/unload"]
+    assert StubImageServer.requests[0][1] == {"recipe": "sd15", "models": {"model": "sd15-q4_0.gguf"}}
+
+
+def test_sdcpp_keep_loaded(sd_server):
+    imagegen.generate("a fox", ImageSpec(backend="sdcpp", url=sd_server, keep_loaded=True), seed=1)
+    assert calls() == ["/sdapi/v1/txt2img"] and StubSdServer.state["state"] == "ready"
+
+
+def test_sdcpp_leaves_a_command_line_model_loaded(sd_server, capsys):
+    StubSdServer.state = {"state": "ready", "origin": "command_line", "recipe": None, "models": {}}
+    imagegen.generate("a fox", ImageSpec(backend="sdcpp", url=sd_server), seed=1)
+    assert calls() == ["/sdapi/v1/txt2img"] and StubSdServer.state["state"] == "ready"
+    assert "command line" in capsys.readouterr().out
+
+
+def test_sdcpp_loads_the_recipe_asked_for(sd_server):
+    imagegen.generate("a fox", ImageSpec(backend="sdcpp", url=sd_server, model="flux-schnell"), seed=1)
+    assert calls() == ["/sdcpp/v1/models/load", "/sdapi/v1/txt2img", "/sdcpp/v1/models/unload"]
+    assert StubImageServer.requests[0][1] == {"recipe": "flux-schnell", "models": {}}
+
+
+def test_sdcpp_with_nothing_loaded_and_nothing_known(sd_server):
+    StubSdServer.state = {"state": "empty", "recipe": None, "models": {}}
+    with pytest.raises(RuntimeError, match="has no model loaded"):
+        imagegen.generate("a fox", ImageSpec(backend="sdcpp", url=sd_server), seed=1)
+
+
+def test_sdcpp_reloads_when_another_job_unloads_it_first(sd_server):
+    StubSdServer.state["unload_before_next"] = True
+    images = imagegen.generate("a fox", ImageSpec(backend="sdcpp", url=sd_server), seed=1)
+    assert len(images) == 1
+    assert calls() == ["/sdapi/v1/txt2img", "/sdcpp/v1/models/unload", "/sdcpp/v1/models/load",
+                       "/sdapi/v1/txt2img", "/sdcpp/v1/models/unload"]

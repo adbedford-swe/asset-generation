@@ -62,6 +62,8 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--image-command", default=None, help='command backend: e.g. "sd-cli -p {prompt} -o {out}"')
     ap.add_argument("--raw-prompt", action="store_true",
                     help="send --text to the image backend as written, without the full-body character framing")
+    ap.add_argument("--image-keep-loaded", action="store_true",
+                    help="sdcpp: leave sd-server's model loaded after the picture (default: unload it to free the GPU)")
     ap.add_argument("--from", dest="start", choices=STAGES, default=None, help="first stage to run")
     ap.add_argument("--to", dest="stop", choices=STAGES, default=None, help="last stage to run")
     ap.add_argument("--force", action="store_true", help="rerun stages that are up to date")
@@ -73,7 +75,8 @@ def image_spec(a) -> ImageSpec:
         width, height = (int(v) for v in a.image_size.lower().split("x"))
     return ImageSpec.from_env(backend=a.image_backend, url=a.image_url, model=a.image_model, width=width,
                               height=height, steps=a.image_steps, workflow=a.comfy_workflow,
-                              command=a.image_command, style=False if a.raw_prompt else None)
+                              command=a.image_command, style=False if a.raw_prompt else None,
+                              keep_loaded=True if a.image_keep_loaded else None)
 
 
 def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path | None, device: str,
@@ -258,6 +261,7 @@ def main(argv=None) -> None:
         i.add_argument(flag, default=None)
     i.add_argument("--image-steps", type=int, default=None)
     i.add_argument("--raw-prompt", action="store_true")
+    i.add_argument("--image-keep-loaded", action="store_true")
     i.set_defaults(func=cmd_image)
 
     e = sub.add_parser("export", help="package a finished character for unity, godot or plain gltf")

@@ -502,6 +502,7 @@ class ImageBackend(BaseModel):
     cfg_scale: float | None = None
     sampler: str | None = None
     style: bool | None = Field(None, description="frame the prompt as a full-body character (default true)")
+    keep_loaded: bool | None = Field(None, description="sdcpp: leave sd-server's model loaded afterwards")
 
 
 class Draft(BaseModel):
@@ -773,12 +774,15 @@ def main(argv=None) -> None:
     ap.add_argument("--image-steps", type=int, default=None)
     ap.add_argument("--comfy-workflow", default=None, help="comfyui: an API-format workflow with {{prompt}}")
     ap.add_argument("--image-command", default=None, help='command: e.g. "sd-cli -p {prompt} -o {out}"')
+    ap.add_argument("--image-keep-loaded", action="store_true",
+                    help="sdcpp: leave sd-server's model loaded after each picture (default: unload it)")
     a = ap.parse_args(argv)
     width = height = None
     if a.image_size:
         width, height = (int(v) for v in a.image_size.lower().split("x"))
     spec = ImageSpec.from_env(backend=a.image_backend, url=a.image_url, model=a.image_model, width=width,
-                              height=height, steps=a.image_steps, workflow=a.comfy_workflow, command=a.image_command)
+                              height=height, steps=a.image_steps, workflow=a.comfy_workflow, command=a.image_command,
+                              keep_loaded=True if a.image_keep_loaded else None)
     devices = [d.strip() for d in a.devices.split(",")] if a.devices else None
     manager = JobManager(Path(a.out).resolve() if a.out else OUT_ROOT, devices, spec)
     if a.host not in ("127.0.0.1", "localhost", "::1") and not a.token:
