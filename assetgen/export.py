@@ -1,4 +1,4 @@
-"""Package a finished asset (a character, a prop or a diorama) for an engine.
+"""Package a finished asset (a character, a prop, a diorama or a whole scene) for an engine.
 
     assetgen export outputs/goblin --engine unity --project ~/MyGame      # straight into a Unity project
     assetgen export outputs/goblin --engine godot --project ~/my_godot_game
@@ -14,6 +14,8 @@ preview picture. The engine integrations do the rest on import:
   godot  the ``assetgen`` addon (``godot/addons/assetgen``) sets each clip's loop mode and builds
          an AnimationTree, or gives a prop its static body and collision shape; the export writes
          the ``.glb.import`` that points Godot at it.
+
+A scene also brings ``assets/``: every object in it as a prop of its own.
 
 With ``--project`` the files are copied into the project, and the integration is added to it
 when it is missing (Unity: a ``Packages/manifest.json`` entry; Godot: the addon, enabled).
@@ -92,8 +94,13 @@ def export(source: Path, engine: str, out_dir: Path) -> Path:
         data["preview"] = f"{name}{'_clips' if data['format'] == character.FORMAT else '_preview'}.png"
         shutil.copy2(preview, folder / data["preview"])
     (folder / f"{name}{character.EXTENSION}").write_text(json.dumps(data, indent=2))
+    if data["format"] == "assetgen.scene" and (glb.parent / "assets").is_dir():
+        shutil.copytree(glb.parent / "assets", folder / "assets", dirs_exist_ok=True)
     if engine == "godot":
         (folder / f"{glb.name}.import").write_text(_godot_import_file(data))
+        for part in sorted((folder / "assets").glob("*.assetgen")):
+            prop = json.loads(part.read_text())
+            (part.parent / f"{prop['model']['file']}.import").write_text(_godot_import_file(prop))
     return folder
 
 
@@ -162,18 +169,23 @@ def enable_godot_addon(project: Path) -> bool:
     return True
 
 
+FOLDERS = {"assetgen.character": "Characters", "assetgen.prop": "Props", "assetgen.scene": "Environments"}
+
+
 def install(source: Path, engine: str, project: Path, folder: str | None = None, package_source: str = "auto",
             log=print) -> Path:
-    """Export ``source`` straight into an engine project. Returns the character's folder there."""
+    """Export ``source`` straight into an engine project, by default into a folder for its kind
+    (Characters, Props or Environments; lower case in Godot). Returns the asset's folder there."""
+    kind_folder = FOLDERS.get(assetfile.load(assetfile.ensure(find_asset(source)))["format"], "Characters")
     if engine == "unity":
         project = unity_project(project)
-        dest = export(source, engine, project / "Assets" / (folder or "Characters"))
+        dest = export(source, engine, project / "Assets" / (folder or kind_folder))
         added = add_unity_package(project, package_source)
         if added:
             log(f"added {UNITY_PACKAGE} to {project / 'Packages' / 'manifest.json'} ({added})")
     elif engine == "godot":
         project = godot_project(project)
-        dest = export(source, engine, project / (folder or "characters"))
+        dest = export(source, engine, project / (folder or kind_folder.lower()))
         if enable_godot_addon(project):
             log(f"enabled the assetgen addon in {project / 'project.godot'}")
     else:

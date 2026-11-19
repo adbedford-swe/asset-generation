@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
@@ -9,12 +10,17 @@ using UnityEngine;
 namespace Assetgen.Editor
 {
     /// <summary>
-    /// Window > Assetgen: describe a character, a prop or a diorama (or give a picture), generate it, and it
-    /// lands in the project.
+    /// Window > Assetgen: describe a character, a prop or a diorama (or give a picture), or a whole scene,
+    /// generate it, and it lands in the project.
     /// </summary>
     public sealed class AssetgenWindow : EditorWindow
     {
         [SerializeField] AssetKind kind;
+        [SerializeField] bool scene;
+        [SerializeField] string scenePrompt = "";
+        [SerializeField] string specFile = "";
+        [SerializeField] string sceneName = "";
+        [SerializeField] string reuseJob = "";
         [SerializeField] string prompt = "";
         [SerializeField] Texture2D image;
         [SerializeField] string imageFile = "";
@@ -36,7 +42,7 @@ namespace Assetgen.Editor
         double m_NextRefresh;
         GUIStyle m_Wrapped, m_Muted, m_Title;
 
-        static readonly string[] KindLabels = { "Character", "Prop", "Diorama" };
+        static readonly string[] KindLabels = { "Character", "Prop", "Diorama", "Scene" };
 
         static readonly string[] Examples =
         {
@@ -47,6 +53,9 @@ namespace Assetgen.Editor
 
         // Advanced settings that only matter to rigged, animated characters.
         static readonly string[] CharacterSettings = { "motionSteps", "loopFrames", "rootMotion", "rigCandidates" };
+
+        // The Advanced settings a scene job takes.
+        static readonly string[] SceneSettingNames = { "idolSteps", "faceBudget", "textureSize" };
 
         static readonly (string label, string[] motions)[] Presets =
         {
@@ -255,9 +264,17 @@ namespace Assetgen.Editor
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUILayout.Label($"New {kind.Id()}", m_Title);
+                GUILayout.Label($"New {(scene ? "scene" : kind.Id())}", m_Title);
                 GUILayout.FlexibleSpace();
-                kind = (AssetKind)GUILayout.Toolbar((int)kind, KindLabels, GUILayout.Width(240));
+                var mode = GUILayout.Toolbar(scene ? KindLabels.Length - 1 : (int)kind, KindLabels, GUILayout.Width(320));
+                scene = mode == KindLabels.Length - 1;
+                if (!scene)
+                    kind = (AssetKind)mode;
+            }
+            if (scene)
+            {
+                DrawCreateScene();
+                return;
             }
             if (kind == AssetKind.Prop)
                 GUILayout.Label("One static object, with a convex collider.", m_Muted);
@@ -319,6 +336,52 @@ namespace Assetgen.Editor
             }
         }
 
+        void DrawCreateScene()
+        {
+            GUILayout.Label("A whole environment: each object made as a prop and laid out on a generated ground, " +
+                            "as one static model with its colliders.", m_Muted);
+            EditorGUILayout.LabelField("Describe it", EditorStyles.miniBoldLabel);
+            scenePrompt = EditorGUILayout.TextArea(scenePrompt, m_Wrapped, GUILayout.MinHeight(48));
+            if (string.IsNullOrEmpty(scenePrompt))
+                GUILayout.Label("e.g. a forest camp at dusk with a tent, a campfire and logs to sit on. The server's " +
+                                "language model plans the scene from it.", m_Muted);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(new GUIContent("Or from a spec", "A scene spec (.json): the objects, the ground " +
+                                                                            "and where everything goes"),
+                    new GUIContent(string.IsNullOrEmpty(specFile) ? "none" : Path.GetFileName(specFile), specFile));
+                if (GUILayout.Button("File…", GUILayout.Width(52)))
+                {
+                    var picked = EditorUtility.OpenFilePanel("Scene spec", "", "json");
+                    if (!string.IsNullOrEmpty(picked))
+                        specFile = picked;
+                }
+                if (!string.IsNullOrEmpty(specFile) && GUILayout.Button("×", EditorStyles.miniButton, GUILayout.Width(20)))
+                    specFile = "";
+            }
+            sceneName = EditorGUILayout.TextField(new GUIContent("Name", "From the spec or the description when empty"), sceneName);
+
+            var earlier = m_Jobs.Where(j => j.kind == "scene" && j.Done).ToList();
+            var labels = new[] { "None" }.Concat(earlier.Select(j => $"{j.name} ({j.id})".Replace("/", "\u2215"))).ToArray();
+            var index = Mathf.Max(0, earlier.FindIndex(j => j.id == reuseJob) + 1);
+            index = EditorGUILayout.Popup(new GUIContent("Reuse objects from",
+                "An earlier scene on the server: its finished objects and ground are kept where the new scene still " +
+                "asks for them"), index, labels);
+            reuseJob = index > 0 ? earlier[index - 1].id : "";
+            DrawAdvanced();
+
+            var spec = !string.IsNullOrEmpty(specFile) && File.Exists(specFile);
+            var canStart = AssetgenServer.StartWhenNeeded && AssetgenServer.CannotStartReason == null;
+            using (new EditorGUI.DisabledScope((m_Info == null && !canStart) || m_Busy ||
+                                               (string.IsNullOrWhiteSpace(scenePrompt) && !spec)))
+            {
+                var label = m_Busy ? (s_Starting ? "Starting the server…" : "Submitting…") : "Generate scene";
+                if (GUILayout.Button(label, GUILayout.Height(30)))
+                    GenerateScene(spec ? File.ReadAllText(specFile) : null);
+            }
+        }
+
         void DrawAdvanced()
         {
             showAdvanced = EditorGUILayout.Foldout(showAdvanced, "Advanced", true);
@@ -330,11 +393,13 @@ namespace Assetgen.Editor
             EditorGUI.BeginChangeCheck();
             using (new EditorGUI.IndentLevelScope())
             {
-                DrawImageModel(generation.FindPropertyRelative("imageModel"));
+                if (!scene)
+                    DrawImageModel(generation.FindPropertyRelative("imageModel"));
                 foreach (var name in new[] { "idolSteps", "motionSteps", "promptStrength", "seed", "loopFrames", "rootMotion",
                                              "faceBudget", "textureSize", "rigCandidates" })
                 {
-                    if (!kind.IsStatic() || !CharacterSettings.Contains(name))
+                    var shown = scene ? SceneSettingNames.Contains(name) : !kind.IsStatic() || !CharacterSettings.Contains(name);
+                    if (shown)
                         EditorGUILayout.PropertyField(generation.FindPropertyRelative(name));
                 }
             }
@@ -426,23 +491,8 @@ namespace Assetgen.Editor
                 };
                 if (picture != null)
                     request.image = "data:image/png;base64," + Convert.ToBase64String(picture);
-                if (m_Info == null)
-                {
-                    s_Starting = true;
-                    Repaint();
-                    try
-                    {
-                        await AssetgenServer.EnsureRunningAsync();
-                    }
-                    finally
-                    {
-                        s_Starting = false;
-                    }
-                }
-                var job = await new AssetgenClient().SubmitAsync(request);
-                JobTracker.Track(job.id);
-                m_Jobs = new[] { job }.Concat(m_Jobs.Where(j => j.id != job.id)).ToArray();
-                m_NextRefresh = 0;
+                await EnsureServerAsync();
+                Started(await new AssetgenClient().SubmitAsync(request));
             }
             catch (Exception e)
             {
@@ -453,6 +503,55 @@ namespace Assetgen.Editor
                 m_Busy = false;
                 Repaint();
             }
+        }
+
+        async void GenerateScene(string spec)
+        {
+            m_Busy = true;
+            try
+            {
+                var request = new SceneRequest
+                {
+                    prompt = scenePrompt.Trim(),
+                    name = sceneName.Trim(),
+                    @from = reuseJob ?? "",
+                    settings = AssetgenSettings.instance.generation.ToScene(),
+                };
+                await EnsureServerAsync();
+                Started(await new AssetgenClient().SubmitSceneAsync(request, spec));
+            }
+            catch (Exception e)
+            {
+                EditorUtility.DisplayDialog("Assetgen", $"Could not start the scene: {e.Message}", "OK");
+            }
+            finally
+            {
+                m_Busy = false;
+                Repaint();
+            }
+        }
+
+        async Task EnsureServerAsync()
+        {
+            if (m_Info != null)
+                return;
+            s_Starting = true;
+            Repaint();
+            try
+            {
+                await AssetgenServer.EnsureRunningAsync();
+            }
+            finally
+            {
+                s_Starting = false;
+            }
+        }
+
+        void Started(JobInfo job)
+        {
+            JobTracker.Track(job.id);
+            m_Jobs = new[] { job }.Concat(m_Jobs.Where(j => j.id != job.id)).ToArray();
+            m_NextRefresh = 0;
         }
 
         void DrawJobs()
@@ -563,10 +662,25 @@ namespace Assetgen.Editor
                     DrawProjectButtons(path, PropBuilder.PrefabPath(path));
                 }
             }
+            foreach (var (path, definition) in CharacterImport.AllScenes())
+            {
+                any = true;
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    var summary = $"scene · {definition.size.x:0.#} × {definition.size.y:0.#} m · " +
+                                  $"{definition.objects.Count} objects, {definition.instances.Count} placed";
+                    GUILayout.Label(new GUIContent($"{definition.name}", string.Join(", ", definition.objects.Select(o => $"{o.id} ×{o.count}"))),
+                        GUILayout.MinWidth(80));
+                    GUILayout.Label(summary, m_Muted);
+                    GUILayout.FlexibleSpace();
+                    DrawProjectButtons(path, SceneBuilder.PrefabPath(path));
+                }
+            }
             if (!any)
                 GUILayout.Label("None yet. Generated characters are imported into " +
                                 $"{AssetgenSettings.instance.charactersFolder}, props and dioramas into " +
-                                $"{AssetgenSettings.instance.propsFolder}.", m_Muted);
+                                $"{AssetgenSettings.instance.propsFolder}, scenes into " +
+                                $"{AssetgenSettings.instance.environmentsFolder}.", m_Muted);
         }
 
         void DrawProjectButtons(string path, string prefab)

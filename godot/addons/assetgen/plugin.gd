@@ -1,6 +1,6 @@
 @tool
 extends EditorPlugin
-## Makes sure every assetgen asset (a character, a prop or a diorama) imports through
+## Makes sure every assetgen asset (a character, a prop, a diorama or a scene) imports through
 ## character_import.gd, including a .glb and .assetgen dropped into the project by hand
 ## (`assetgen export --engine godot` already writes the .glb.import that does this).
 

@@ -12,12 +12,17 @@
   assetgen batch --kind prop --texts props.txt --out outputs/props   (an asset library, one prop per line)
   assetgen image --prompt "a goblin shaman" --out drafts/goblin --count 4   (text to image only)
   assetgen export outputs/goblin --engine unity --project ~/MyGame
+  assetgen scene example --out camp.json                          (a scene spec to start from)
+  assetgen scene plan --text "a forest camp at dusk" --llm-base-url http://127.0.0.1:8080/v1 --out camp.json
+  assetgen scene build camp.json --out outputs/camp               (every object, the ground, one glTF)
+  assetgen export outputs/camp --engine godot --project ~/my_godot_game
   assetgen serve [--host 0.0.0.0]                       HTTP API and web UI (also: python server.py)
   assetgen synth --mesh Fox.glb --out testdata/fox      (Idol-like test input from a mesh)
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -201,6 +206,55 @@ def cmd_image(a) -> None:
           init=Path(a.init) if a.init else None, strength=a.strength)
 
 
+def cmd_scene(a) -> None:
+    import json
+
+    from .scene import SpecError, load
+
+    if a.scene_cmd == "example":
+        from .scene.plan import EXAMPLE
+
+        text = json.dumps(EXAMPLE, indent=2)
+        if a.out:
+            Path(a.out).write_text(text + "\n")
+            print(f"wrote {a.out}")
+        else:
+            print(text)
+    elif a.scene_cmd == "plan":
+        from .scene.plan import plan
+
+        url = a.llm_base_url or os.environ.get("ASSETGEN_LLM_URL")
+        if not url:
+            raise SystemExit("give --llm-base-url (or set ASSETGEN_LLM_URL): an OpenAI-compatible endpoint")
+        try:
+            data = plan(a.text, url, a.llm_model, a.size)
+        except SpecError as e:
+            raise SystemExit(str(e))
+        Path(a.out).write_text(json.dumps(data, indent=2) + "\n")
+        print(f"wrote {a.out}; build it with: assetgen scene build {a.out}")
+    elif a.scene_cmd == "build":
+        from .scene.build import build
+
+        try:
+            spec = load(Path(a.spec))
+        except SpecError as e:
+            raise SystemExit(f"{a.spec}: {e}")
+        mesh_args = []
+        for flag, value in (("--target_faces", a.faces), ("--texture_size", a.texture), ("--resolution", a.voxels)):
+            if value is not None:
+                mesh_args += [flag, str(value)]
+        out = Path(a.out or Path("outputs") / "scenes" / spec.name)
+        path = build(spec, out, [d.strip() for d in a.devices.split(",")], image_spec(a), force=a.force,
+                     mesh_args=mesh_args, idol_steps=a.idol_steps)
+        print(f"done: {path.with_suffix('.glb')}")
+    else:  # check
+        try:
+            spec = load(Path(a.spec))
+        except SpecError as e:
+            raise SystemExit(f"{a.spec}: {e}")
+        print(f"{a.spec}: {len(spec.objects)} kinds of object on {spec.ground.size[0]:g} x {spec.ground.size[1]:g} m")
+
+
 def cmd_export(a) -> None:
     from .export import export, export_zip, install
 
@@ -281,11 +335,41 @@ def main(argv=None) -> None:
     i.add_argument("--image-keep-loaded", action="store_true")
     i.set_defaults(func=cmd_image)
 
-    e = sub.add_parser("export", help="package a finished asset for unity, godot or plain gltf")
+    sc = sub.add_parser("scene", help="environments: a spec of objects and where they go -> one scene")
+    scs = sc.add_subparsers(dest="scene_cmd", required=True)
+    ex = scs.add_parser("example", help="write an example scene spec to start from")
+    ex.add_argument("--out", default=None, help="file to write (default: print it)")
+    pl = scs.add_parser("plan", help="a scene spec from a description, written by a language model")
+    pl.add_argument("--text", required=True, help='e.g. "a forest camp at dusk with a tent and a campfire"')
+    pl.add_argument("--out", required=True, help="the spec file to write")
+    pl.add_argument("--llm-base-url", default=None, help="OpenAI-compatible endpoint (or ASSETGEN_LLM_URL)")
+    pl.add_argument("--llm-model", default=os.environ.get("ASSETGEN_LLM_MODEL", "local"))
+    pl.add_argument("--size", type=float, default=None, help="ground size in metres (default: the model decides)")
+    bd = scs.add_parser("build", help="make every object, the ground and the layout; write one scene")
+    bd.add_argument("spec", help="the scene spec (JSON)")
+    bd.add_argument("--out", default=None, help="folder (default outputs/scenes/<name>)")
+    bd.add_argument("--devices", default="cuda", help="comma-separated; objects are made side by side")
+    bd.add_argument("--force", action="store_true", help="remake objects that are up to date")
+    bd.add_argument("--faces", type=int, default=None, help="mesh face budget per object (default 40000)")
+    bd.add_argument("--texture", type=int, default=None, help="texture size per object (default 2048)")
+    bd.add_argument("--voxels", type=int, default=None, help="fusion resolution (default 256)")
+    bd.add_argument("--idol-steps", type=int, default=None)
+    for flag in ("--image-backend", "--image-url", "--image-model", "--image-size", "--comfy-workflow",
+                 "--image-command", "--comfy-edit-workflow", "--image-edit-command"):
+        bd.add_argument(flag, default=None)
+    bd.add_argument("--image-steps", type=int, default=None)
+    bd.add_argument("--image-keep-loaded", action="store_true")
+    bd.set_defaults(raw_prompt=False)
+    ck = scs.add_parser("check", help="check a scene spec without building it")
+    ck.add_argument("spec")
+    sc.set_defaults(func=cmd_scene)
+
+    e = sub.add_parser("export", help="package a finished asset or scene for unity, godot or plain gltf")
     e.add_argument("source", help="a run folder or its <name>.glb")
     e.add_argument("--engine", choices=["unity", "godot", "gltf"], default="unity")
     e.add_argument("--project", default=None, help="copy straight into this Unity or Godot project")
-    e.add_argument("--folder", default=None, help="folder inside the project (Assets/Characters, characters)")
+    e.add_argument("--folder", default=None,
+                   help="folder inside the project (default: Characters, Props or Environments for its kind)")
     e.add_argument("--package-source", choices=["auto", "local", "git"], default="auto",
                    help="unity: reference com.assetgen.unity from this checkout (local) or from GitHub (git)")
     e.add_argument("--zip", action="store_true", help="write <name>-<engine>.zip instead of a folder")

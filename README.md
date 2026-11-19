@@ -3,7 +3,7 @@
 
 <h1 align="center">assetgen</h1>
 
-<p align="center"><b>Type a sentence. Get a rigged, animated character in your game engine.</b></p>
+<p align="center"><b>Type a sentence. Get a rigged, animated character, a prop or a whole scene in your game engine.</b></p>
 
 <p align="center">
   Text or a picture → textured mesh → skeleton → motion clips → a prefab in Unity or a scene in Godot.<br>
@@ -14,6 +14,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#text-to-image-bring-your-own-generator">Text to image</a> ·
   <a href="#props-and-dioramas">Props</a> ·
+  <a href="#scenes">Scenes</a> ·
   <a href="#the-server">Server &amp; API</a> ·
   <a href="#unity">Unity</a> ·
   <a href="#godot">Godot</a> ·
@@ -67,6 +68,8 @@ the speeds the clips were generated at, and there's a prefab you can drag into a
 - **Props and set pieces too.** `--kind prop` makes one static object (a barrel, a tree, a lamp post), `--kind diorama`
   a whole set piece as one model. Both stop after the mesh and come with a collider and a footprint; see
   [Props and dioramas](#props-and-dioramas).
+- **Whole scenes.** A spec of what is where (or a sentence, for a language model to plan) becomes generated objects in
+  a shared style on generated ground, laid out without overlaps, in one instanced glTF; see [Scenes](#scenes).
 - **A server** with a web UI and an HTTP API on one port, so you, a script or an LLM agent can drive all of it.
 
 ## Quick start
@@ -178,6 +181,79 @@ and Godot gives the scene a StaticBody3D with the matching shape. The footprint 
 outline, how far it reaches from its pivot, and how far its base does (a tree's trunk, not its canopy). Layouts use it to
 space assets so they don't overlap.
 
+## Scenes
+
+A scene is an environment made of generated objects: a forest camp, a market square, a ruined courtyard. You say what is
+in it and where; assetgen makes each kind of object once, as a prop, and places it as often as the scene needs on
+generated ground:
+
+```bash
+uv run assetgen scene example --out camp.json      # a spec to start from
+uv run assetgen scene plan --text "a forest camp at dusk with a tent, a campfire and logs to sit on" \
+    --llm-base-url http://127.0.0.1:8080/v1 --out camp.json       # or have a language model write it
+uv run assetgen scene build camp.json --out outputs/camp --devices cuda:0,cuda:1
+uv run assetgen export outputs/camp --engine godot --project ~/my_godot_game
+```
+
+The spec ([schema](schema/scene-spec.schema.json)) is short:
+
+```jsonc
+{
+  "name": "forest_camp",
+  "style": "stylised low-poly, hand-painted textures, warm evening light",
+  "ground": {"size": [24, 24], "prompt": "mossy forest floor with pine needles", "relief": 0.6},
+  "objects": [
+    {"id": "campfire", "prompt": "a ring of stones around burning logs", "height": 0.5, "place": [[0, 0]]},
+    {"id": "tent", "prompt": "a canvas tent with wooden poles", "height": 2.2,
+     "place": [{"position": [3.5, -2], "yaw": {"face": "campfire"}}]},
+    {"id": "pine", "prompt": "a tall pine tree", "height": 9,
+     "scatter": {"count": 16, "region": "edge", "scale": [0.8, 1.25]}},
+    {"id": "boulder", "prompt": "a mossy granite boulder", "height": 1.0,
+     "scatter": {"count": 8, "scale": [0.5, 1.4], "tilt": true}}
+  ]
+}
+```
+
+What the build does with it:
+
+- **Objects.** Each one is a prop run of its own under `props/<id>/`. It can come from a `prompt`, an `image` (with
+  `"redraw": 0.5`, the picture is first redrawn in the scene's style), a splat (`ply`) or a finished asset (`asset`: a
+  run folder or `.glb`, so a library of props can be reused). Runs are resumable: change one prompt and only that
+  object is made again; move things around and only the layout is redone. With several `--devices`, objects are made
+  side by side.
+- **Consistency.** The scene's `style` is added to every prompt. Then `harmonize` (0 to 1, default 0.5) evens out what
+  separately drawn pictures still disagree on. It measures each object's colours over its surface and moves its
+  brightness, contrast, saturation and white balance towards the others (or towards a `concept` picture). Hue is kept:
+  a red barrel stays red, it just stops looking lit by a different sun. The white balance is read off near-grey
+  surfaces, which show the colour of the light.
+- **Ground.** A `prompt` is drawn as a texture and made tileable, by blending it with itself shifted half a tile, so it
+  repeats every `tile` metres without seams. `texture` takes a picture instead, which suits small image models better:
+  top-down ground textures need a capable one (SDXL, FLUX), and SD 1.5 tends to draw a landscape or cloth instead.
+  `relief` and `feature` give it rolling hills.
+- **Layout.**
+  - `place` puts objects at chosen spots. `yaw` is degrees, `"random"`, or `{"face": "<id>"}` to turn the object's
+    front towards another. The ground is levelled under each placed object so it sits flat.
+  - `scatter` fills a region (`all`, `edge`, `centre` or a rectangle) with `count` copies at random sizes and turns.
+    Each copy keeps clear of placed objects by their reach plus `clearance`, and of other scattered copies by their
+    footprints, so trunks never cross and paths around the tent stay open.
+  - Everything stands on the lowest ground under its base, so nothing floats on a slope. `tilt` leans rocks and logs
+    with the slope instead.
+- **Output.**
+  - `<name>.glb`: the ground and every placed object. Each object's mesh is stored once and every placement is a node
+    pointing at it, so forty pines cost one pine.
+  - `<name>.assetgen`: the scene file ([schema](schema/scene.schema.json)), listing the objects and every placement.
+  - `assets/<id>.glb`: each object as a prop of its own.
+  - `<name>.png`: a preview from three quarters and from above.
+
+Engines import the scene as one model. Godot gives the ground a trimesh body and every placed object a body with its
+collider; Unity builds a static prefab with the same colliders. The objects under `assets/` import as ordinary props
+too.
+
+**Which tool for which job.** A *diorama* (`--kind diorama`) is the quickest way to get a static set piece that nothing
+needs to move or come apart: one picture, one model. A *scene* is for anything bigger or more alive: the objects are
+separate, so they can be colliders, be moved, be reused in another scene, and be instanced cheaply. The two mix: a
+diorama can be one object in a scene (`"kind": "diorama"`).
+
 ## The server
 
 `python server.py` (same as `assetgen serve`) runs the web UI and the API on one port and one job queue: a job
@@ -208,8 +284,12 @@ curl -o owl-unity.zip localhost:7860/api/v1/jobs/<id>/export/unity
 | `POST /api/v1/images` | Candidate pictures for a prompt (framed for its `kind`), to choose from |
 | `POST /api/v1/uploads` | An image or a `.ply` splat, for `POST /jobs` |
 | `GET /api/v1/info` | Version, devices, image backend health, default motions |
+| `POST /api/v1/scenes` | A scene from a `spec`, or a `prompt` for the language model to plan; `from` reuses an earlier scene's objects |
+| `POST /api/v1/scenes/plan`, `GET /api/v1/scenes/example` | A spec from a description; an example spec |
 
-`/docs` has the full reference. To listen beyond localhost, set a token (`--token` or `ASSETGEN_API_TOKEN`) and send
+`/docs` has the full reference. Planning scenes from a description needs a language model: start the server with
+`--llm-base-url` (any OpenAI-compatible endpoint; or `ASSETGEN_LLM_URL`, `ASSETGEN_LLM_MODEL`), or send `llm` with the
+request. To listen beyond localhost, set a token (`--token` or `ASSETGEN_API_TOKEN`) and send
 `Authorization: Bearer <token>`.
 
 ## Unity
@@ -304,7 +384,8 @@ Everything is reachable without a browser. Pick whichever fits the harness:
 - **HTTP:** `POST /api/v1/jobs` with a prompt, follow `/events` or poll the job, fetch `/export/<engine>`. The OpenAPI
   schema is at `/openapi.json`.
 - **CLI:** `assetgen run --text ...`, `assetgen batch --texts characters.txt` (one character per line, spread over
-  your GPUs), `assetgen export ... --project ...`.
+  your GPUs), `assetgen scene build spec.json`, `assetgen export ... --project ...`. An agent can write scene specs
+  itself: `schema/scene-spec.schema.json` describes them and `assetgen scene check` validates one.
 - **Unity CLI / MCP:** `unity command assetgen ...` inside a running Editor, or the same commands as MCP tools through
   `unity mcp`.
 
@@ -436,9 +517,11 @@ uv run pytest
 ```
 
 The tests cover the rasterizer against a brute-force reference, conventions, sphere reconstruction, glTF round trips,
-orientation recovery, rig utilities, skinning, the clip merge, loops, the character file and its schema, the
-exporters, the image backends (against a stub server) and the HTTP API. `ASSETGEN_GODOT=<godot binary>` adds the Godot
-addon on a real Godot.
+orientation recovery, rig utilities, skinning, the clip merge, loops, the character and prop files and their schemas,
+the exporters, the image backends and image to image (against a stub server), the HTTP API, and scenes: spec checks,
+tileable textures, terrain, layout (spacing, facing, standing on slopes), harmonizing, a whole build into one instanced
+glTF, rebuilding, and planning against a stub language model. `ASSETGEN_GODOT=<godot binary>` adds the Godot addon on a
+real Godot, for a character, props and a scene.
 
 ## Licences
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -15,7 +16,8 @@ namespace Assetgen.Editor
     /// </summary>
     public static class PropBuilder
     {
-        const StaticEditorFlags DioramaFlags = StaticEditorFlags.ContributeGI | StaticEditorFlags.OccluderStatic |
+        /// <summary>What dioramas and scenes are marked: everything static, as they never move.</summary>
+        internal const StaticEditorFlags StaticFlags = StaticEditorFlags.ContributeGI | StaticEditorFlags.OccluderStatic |
                                                StaticEditorFlags.OccludeeStatic | StaticEditorFlags.BatchingStatic |
                                                StaticEditorFlags.ReflectionProbeStatic;
 
@@ -66,11 +68,10 @@ namespace Assetgen.Editor
             var root = exists ? PrefabUtility.LoadPrefabContents(path) : (GameObject)PrefabUtility.InstantiatePrefab(model);
             try
             {
-                foreach (var collider in root.GetComponentsInChildren<Collider>(true))
-                    if (PrefabUtility.IsAddedComponentOverride(collider))
-                        Object.DestroyImmediate(collider);
-                AddColliders(root, definition);
-                var flags = definition.IsDiorama ? DioramaFlags : (StaticEditorFlags)0;
+                RemoveAddedColliders(root);
+                var meshes = root.GetComponentsInChildren<MeshFilter>(true).ToList();
+                AddColliders(root, meshes, definition.colliderType, definition.boxCenter, definition.boxSize, definition.name);
+                var flags = definition.IsDiorama ? StaticFlags : (StaticEditorFlags)0;
                 foreach (var t in root.GetComponentsInChildren<Transform>(true))
                     GameObjectUtility.SetStaticEditorFlags(t.gameObject, flags);
                 if (!root.TryGetComponent(out AssetgenProp prop))
@@ -90,28 +91,41 @@ namespace Assetgen.Editor
             }
         }
 
-        static void AddColliders(GameObject root, PropDefinition definition)
+        /// <summary>Removes the colliders an earlier build added, so a rebuild starts from the model's own.</summary>
+        internal static void RemoveAddedColliders(GameObject root)
         {
-            switch (definition.colliderType)
+            foreach (var collider in root.GetComponentsInChildren<Collider>(true))
+                if (PrefabUtility.IsAddedComponentOverride(collider))
+                    Object.DestroyImmediate(collider);
+        }
+
+        /// <summary>
+        /// A collider of <paramref name="type"/>: a BoxCollider on <paramref name="target"/>, or a MeshCollider
+        /// beside each of <paramref name="meshes"/> (convex or not).
+        /// </summary>
+        internal static void AddColliders(GameObject target, IEnumerable<MeshFilter> meshes, PropDefinition.ColliderType type,
+                                          Vector3 boxCenter, Vector3 boxSize, string what)
+        {
+            switch (type)
             {
                 case PropDefinition.ColliderType.Box:
                 {
-                    var box = root.AddComponent<BoxCollider>();
-                    box.center = definition.boxCenter;
-                    box.size = definition.boxSize;
+                    var box = target.AddComponent<BoxCollider>();
+                    box.center = boxCenter;
+                    box.size = boxSize;
                     break;
                 }
                 case PropDefinition.ColliderType.Convex:
                 case PropDefinition.ColliderType.Mesh:
                 {
-                    var filters = root.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh != null).ToList();
+                    var filters = meshes.Where(f => f.sharedMesh != null).ToList();
                     if (filters.Count == 0)
-                        Debug.LogWarning($"{definition.name}: the model has no mesh to build a collider from");
+                        Debug.LogWarning($"{what}: the model has no mesh to build a collider from");
                     foreach (var filter in filters)
                     {
                         var collider = filter.gameObject.AddComponent<MeshCollider>();
                         collider.sharedMesh = filter.sharedMesh;
-                        collider.convex = definition.colliderType == PropDefinition.ColliderType.Convex;
+                        collider.convex = type == PropDefinition.ColliderType.Convex;
                     }
                     break;
                 }

@@ -12,11 +12,18 @@ extends EditorScenePostImport
 ##
 ## A prop or diorama ("assetgen.prop") gets a StaticBody3D with the collision shape its file asks
 ## for, and the AssetgenProp script on the root, holding its size and footprint.
+##
+## A scene ("assetgen.scene") gets a StaticBody3D under its ground node and under every placement
+## node, with the shape its object asks for (placements of one object share their shapes), and the
+## AssetgenScene script on the root, which maps placements to objects.
 
 const CharacterScript := preload("res://addons/assetgen/assetgen_character.gd")
 const PropScript := preload("res://addons/assetgen/assetgen_prop.gd")
+const SceneScript := preload("res://addons/assetgen/assetgen_scene.gd")
 const CHARACTER_FORMAT := "assetgen.character"
 const PROP_FORMAT := "assetgen.prop"
+const SCENE_FORMAT := "assetgen.scene"
+const COLLIDERS := ["convex", "mesh", "box", "none"]
 const LOCOMOTION := &"Locomotion"
 const FADE := 0.15
 
@@ -31,15 +38,18 @@ func _post_import(scene: Node) -> Object:
 		push_error("assetgen: %s is not an assetgen file" % path)
 		return scene
 	var format = data.get("format")
-	if format != CHARACTER_FORMAT and format != PROP_FORMAT:
+	if not format in [CHARACTER_FORMAT, PROP_FORMAT, SCENE_FORMAT]:
 		push_warning("assetgen: %s has format '%s', which this addon does not read; imported as a plain model" % [path, format])
 		return scene
-	var what := "prop" if format == PROP_FORMAT else "character"
+	var what: String = {PROP_FORMAT: "prop", SCENE_FORMAT: "scene"}.get(format, "character")
 	if int(data.get("version", 1)) > 1:
 		push_error("assetgen: %s is a newer %s format than this addon reads; update it" % [path, what])
 		return scene
 	if format == PROP_FORMAT:
 		build_prop(scene, data)
+		return scene
+	if format == SCENE_FORMAT:
+		build_scene(scene, data)
 		return scene
 	var player := _find_player(scene)
 	if player == null:
@@ -149,21 +159,8 @@ static func _idle(data: Dictionary, clips: Dictionary) -> StringName:
 
 static func build_prop(root: Node, data: Dictionary) -> void:
 	var collider: Dictionary = data.get("collider", {})
-	var collider_type := str(collider.get("type", "convex"))
-	if not collider_type in ["convex", "mesh", "box", "none"]:
-		push_warning("assetgen: %s asks for a '%s' collider, which this addon does not know; using its box" % [root.name, collider_type])
-		collider_type = "box"
-	var shapes := _prop_shapes(root, collider_type, collider.get("box", {}))
-	if collider_type != "none" and shapes.is_empty():
-		push_warning("assetgen: %s has no mesh to build a %s collider from" % [root.name, collider_type])
-	if not shapes.is_empty():
-		var body := StaticBody3D.new()
-		body.name = "StaticBody"
-		root.add_child(body)
-		body.owner = root
-		for collision in shapes:
-			body.add_child(collision)
-			collision.owner = root
+	var collider_type := _collider_type(str(collider.get("type", "convex")), root.name)
+	_add_body(root, root, collider_type, collider.get("box", {}), {})
 
 	var model: Dictionary = data.get("model", {})
 	var footprint: Dictionary = data.get("footprint", {})
@@ -182,8 +179,67 @@ static func build_prop(root: Node, data: Dictionary) -> void:
 	root.set_meta("assetgen", data)
 
 
-## One CollisionShape3D per mesh for "convex" and "mesh", placed where the mesh is; a single one for "box".
-static func _prop_shapes(root: Node, collider_type: String, box: Dictionary) -> Array[CollisionShape3D]:
+static func build_scene(root: Node, data: Dictionary) -> void:
+	var nodes := {}
+	for node in root.find_children("*", "Node3D", true, false):
+		if not nodes.has(String(node.name)):
+			nodes[String(node.name)] = node
+	var objects := {}
+	for object in data.get("objects", []):
+		objects[str(object.get("id"))] = object
+
+	var placements := {}
+	var ground_name := str(data.get("ground", {}).get("node", "ground"))
+	if nodes.has(ground_name):
+		_add_body(root, nodes[ground_name], "mesh", {}, {})
+	else:
+		push_warning("assetgen: %s has no ground node '%s'" % [root.name, ground_name])
+	var cache := {}
+	for instance in data.get("instances", []):
+		var node_name := str(instance.get("node"))
+		var object_id := str(instance.get("object"))
+		if not nodes.has(node_name) or not objects.has(object_id):
+			push_warning("assetgen: %s skips the placement '%s' of '%s': there is no such node or object" % [root.name, node_name, object_id])
+			continue
+		var object: Dictionary = objects[object_id]
+		var collider_type := _collider_type(str(object.get("collider", "convex")), object_id)
+		_add_body(root, nodes[node_name], collider_type, object.get("box", {}), cache)
+		placements[String(root.get_path_to(nodes[node_name]))] = object_id
+
+	root.set_script(SceneScript)
+	root.set("size", _vector2(data.get("model", {}).get("size", [])))
+	root.set("ground_path", root.get_path_to(nodes[ground_name]) if nodes.has(ground_name) else NodePath())
+	root.set("placements", placements)
+	root.set_meta("assetgen", data)
+
+
+static func _collider_type(collider_type: String, what: String) -> String:
+	if collider_type in COLLIDERS:
+		return collider_type
+	push_warning("assetgen: %s asks for a '%s' collider, which this addon does not know; using its box" % [what, collider_type])
+	return "box"
+
+
+## A StaticBody3D under node with the collision shapes collider_type asks for, owned by root so they are saved;
+## nothing for "none". Shapes made from one mesh are shared through cache.
+static func _add_body(root: Node, node: Node, collider_type: String, box: Dictionary, cache: Dictionary) -> void:
+	var shapes := _shapes(node, collider_type, box, cache)
+	if collider_type != "none" and shapes.is_empty():
+		push_warning("assetgen: %s has no mesh to build a %s collider from" % [node.name, collider_type])
+	if shapes.is_empty():
+		return
+	var body := StaticBody3D.new()
+	body.name = "StaticBody"
+	node.add_child(body)
+	body.owner = root
+	for collision in shapes:
+		body.add_child(collision)
+		collision.owner = root
+
+
+## One CollisionShape3D per mesh (node's own, and its children's) for "convex" and "mesh", placed where the
+## mesh is; a single one for "box".
+static func _shapes(node: Node, collider_type: String, box: Dictionary, cache: Dictionary) -> Array[CollisionShape3D]:
 	var shapes: Array[CollisionShape3D] = []
 	if collider_type == "box":
 		var collision := CollisionShape3D.new()
@@ -196,14 +252,20 @@ static func _prop_shapes(root: Node, collider_type: String, box: Dictionary) -> 
 		return shapes
 	if collider_type == "none":
 		return shapes
-	for node in root.find_children("*", "MeshInstance3D", true, false):
-		var mesh: Mesh = node.mesh
+	var meshes := node.find_children("*", "MeshInstance3D", true, false)
+	if node is MeshInstance3D:
+		meshes.push_front(node)
+	for mesh_node in meshes:
+		var mesh: Mesh = mesh_node.mesh
 		if mesh == null:
 			continue
+		var key := [mesh, collider_type]
+		if not cache.has(key):
+			cache[key] = mesh.create_convex_shape() if collider_type == "convex" else mesh.create_trimesh_shape()
 		var collision := CollisionShape3D.new()
 		collision.name = "CollisionShape" if shapes.is_empty() else "CollisionShape%d" % (shapes.size() + 1)
-		collision.shape = mesh.create_convex_shape() if collider_type == "convex" else mesh.create_trimesh_shape()
-		collision.transform = _transform_in(root, node)
+		collision.shape = cache[key]
+		collision.transform = _transform_in(node, mesh_node)
 		shapes.append(collision)
 	return shapes
 
@@ -216,6 +278,10 @@ static func _transform_in(root: Node, node: Node3D) -> Transform3D:
 		transform = (current as Node3D).transform * transform
 		current = current.get_parent()
 	return transform
+
+
+static func _vector2(values: Array) -> Vector2:
+	return Vector2(float(values[0]), float(values[1])) if values.size() == 2 else Vector2.ZERO
 
 
 static func _vector3(values: Array) -> Vector3:

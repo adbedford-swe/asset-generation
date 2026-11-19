@@ -1,8 +1,9 @@
 """The ``.assetgen`` file beside every finished asset, whatever its kind.
 
-Its ``format`` says what it describes: ``assetgen.character`` (:mod:`assetgen.character`)
-or ``assetgen.prop`` for props and dioramas (:mod:`assetgen.prop`). Engines and the
-server read it to know how to set the asset up.
+Its ``format`` says what it describes: ``assetgen.character`` (:mod:`assetgen.character`),
+``assetgen.prop`` for props and dioramas (:mod:`assetgen.prop`) or ``assetgen.scene``
+(:mod:`assetgen.scene.assemble`). Engines and the server read it to know how to set
+the asset up.
 """
 from __future__ import annotations
 
@@ -10,9 +11,10 @@ import json
 from pathlib import Path
 
 from . import character, prop
+from .scene import assemble as scene
 
 EXTENSION = ".assetgen"
-READERS = {character.FORMAT: character.load, prop.FORMAT: prop.load}
+READERS = {character.FORMAT: character.load, prop.FORMAT: prop.load, scene.FORMAT: scene.load}
 
 
 def path_for(glb: Path) -> Path:

@@ -26,6 +26,9 @@ namespace Assetgen.Editor
         [Tooltip("Where generated props and dioramas are imported, one folder each")]
         public string propsFolder = "Assets/Props";
 
+        [Tooltip("Where generated scenes are imported, one folder each (their objects in its assets/ folder)")]
+        public string environmentsFolder = "Assets/Environments";
+
         [Tooltip("Build the prefab (and a character's Animator Controller) whenever an asset's .glb or .assetgen file imports")]
         public bool buildOnImport = true;
 
@@ -82,6 +85,14 @@ namespace Assetgen.Editor
         [Tooltip("Rigs sampled per character; the most plausible is kept")]
         [Min(1)] public int rigCandidates = 3;
 
+        /// <summary>The settings a scene job takes: its objects are made as props.</summary>
+        public SceneSettings ToScene() => new SceneSettings
+        {
+            idol_steps = idolSteps,
+            faces = faceBudget,
+            texture = textureSize,
+        };
+
         public JobSettings ToJob() => new JobSettings
         {
             idol_steps = idolSteps,
@@ -102,7 +113,7 @@ namespace Assetgen.Editor
         static SettingsProvider Create() => new SettingsProvider("Project/Assetgen", SettingsScope.Project)
         {
             label = "Assetgen",
-            keywords = new HashSet<string>(new[] { "assetgen", "character", "prop", "diorama", "server", "generate" }),
+            keywords = new HashSet<string>(new[] { "assetgen", "character", "prop", "diorama", "scene", "environment", "server", "generate" }),
             guiHandler = _ =>
             {
                 var settings = AssetgenSettings.instance;
@@ -114,6 +125,7 @@ namespace Assetgen.Editor
                     AssetgenSettings.Token);
                 EditorGUILayout.PropertyField(serialized.FindProperty("charactersFolder"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("propsFolder"));
+                EditorGUILayout.PropertyField(serialized.FindProperty("environmentsFolder"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("buildOnImport"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("importWhenDone"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("defaultHeight"));

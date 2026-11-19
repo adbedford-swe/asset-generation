@@ -42,7 +42,7 @@ def place_on_ground(m: TexturedMesh, height: float | None = None) -> tuple[Textu
     scale = 1.0 if height is None else float(height) / max(float(hi[1] - lo[1]), 1e-9)
     offset = np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2])
     placed = ((v - offset) * scale).astype(np.float32)
-    return TexturedMesh(placed, m.faces, m.uvs, np.array(m.texture)), scale
+    return TexturedMesh(placed, m.faces, m.uvs, m.texture), scale
 
 
 def outline(points: np.ndarray, max_points: int = 16) -> np.ndarray:
