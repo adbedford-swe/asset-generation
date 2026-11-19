@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Props and dioramas: `.assetgen` files of format `assetgen.prop` import as a `PropDefinition` (kind, size, collider,
+  footprint), and build `name.prefab`, a variant of the model with its collider (convex or non-convex mesh colliders,
+  or a box) and an `AssetgenProp` component. Dioramas are marked static. They are imported into a new props folder
+  (Project Settings > Assetgen, `Assets/Props` by default).
+- The window generates a character, a prop or a diorama (motions only for characters), and lists props in the project.
+- `unity command assetgen generate --kind prop|diorama`; `import`, `build`, `spawn`, `list` and `status` handle props
+  too.
+
 ## 0.4.1
 
 - Image model picker in the window's Advanced section and Project Settings (Automatic, or any model the server's

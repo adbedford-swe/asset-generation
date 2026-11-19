@@ -1,8 +1,8 @@
 @tool
 extends EditorPlugin
-## Makes sure every assetgen character imports through character_import.gd, including a .glb and
-## .assetgen dropped into the project by hand (`assetgen export --engine godot` already writes the
-## .glb.import that does this).
+## Makes sure every assetgen asset (a character, a prop or a diorama) imports through
+## character_import.gd, including a .glb and .assetgen dropped into the project by hand
+## (`assetgen export --engine godot` already writes the .glb.import that does this).
 
 const IMPORT_SCRIPT := "res://addons/assetgen/character_import.gd"
 
@@ -11,7 +11,7 @@ func _enter_tree() -> void:
 	var filesystem := EditorInterface.get_resource_filesystem()
 	filesystem.resources_reimported.connect(_on_reimported)
 	filesystem.filesystem_changed.connect(_scan)
-	add_tool_menu_item("Assetgen: set up characters", _scan)
+	add_tool_menu_item("Assetgen: set up assets", _scan)
 	_scan.call_deferred()
 
 
@@ -21,7 +21,7 @@ func _exit_tree() -> void:
 		filesystem.resources_reimported.disconnect(_on_reimported)
 	if filesystem.filesystem_changed.is_connected(_scan):
 		filesystem.filesystem_changed.disconnect(_scan)
-	remove_tool_menu_item("Assetgen: set up characters")
+	remove_tool_menu_item("Assetgen: set up assets")
 
 
 func _on_reimported(paths: PackedStringArray) -> void:
@@ -43,7 +43,7 @@ func _find(dir: EditorFileSystemDirectory) -> Array:
 	return found
 
 
-## Point each character .glb's import at the character import script and reimport the ones changed.
+## Point each assetgen .glb's import at the import script and reimport the ones changed.
 func _fix(paths: Array) -> void:
 	var changed := PackedStringArray()
 	for path in paths:

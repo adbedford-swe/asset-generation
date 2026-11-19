@@ -23,10 +23,13 @@ namespace Assetgen.Editor
         [Tooltip("Where generated characters are imported, one folder each")]
         public string charactersFolder = "Assets/Characters";
 
-        [Tooltip("Build the prefab and Animator Controller whenever a character's .glb or .assetgen file imports")]
+        [Tooltip("Where generated props and dioramas are imported, one folder each")]
+        public string propsFolder = "Assets/Props";
+
+        [Tooltip("Build the prefab (and a character's Animator Controller) whenever an asset's .glb or .assetgen file imports")]
         public bool buildOnImport = true;
 
-        [Tooltip("Import characters generated from this project as soon as they finish")]
+        [Tooltip("Import assets generated from this project as soon as they finish")]
         public bool importWhenDone = true;
 
         [Min(0.01f)] public float defaultHeight = 1.8f;
@@ -99,7 +102,7 @@ namespace Assetgen.Editor
         static SettingsProvider Create() => new SettingsProvider("Project/Assetgen", SettingsScope.Project)
         {
             label = "Assetgen",
-            keywords = new HashSet<string>(new[] { "assetgen", "character", "server", "generate" }),
+            keywords = new HashSet<string>(new[] { "assetgen", "character", "prop", "diorama", "server", "generate" }),
             guiHandler = _ =>
             {
                 var settings = AssetgenSettings.instance;
@@ -110,6 +113,7 @@ namespace Assetgen.Editor
                     new GUIContent("API token", "Only when the server was started with --token. Stored in EditorPrefs."),
                     AssetgenSettings.Token);
                 EditorGUILayout.PropertyField(serialized.FindProperty("charactersFolder"));
+                EditorGUILayout.PropertyField(serialized.FindProperty("propsFolder"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("buildOnImport"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("importWhenDone"));
                 EditorGUILayout.PropertyField(serialized.FindProperty("defaultHeight"));

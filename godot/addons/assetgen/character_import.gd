@@ -1,15 +1,22 @@
 @tool
 extends EditorScenePostImport
-## Runs on an assetgen character's .glb as it imports (the .glb.import's import_script). Reads the
-## .assetgen file beside it and makes the scene ready to play:
+## Runs on an assetgen asset's .glb as it imports (the .glb.import's import_script). Reads the
+## .assetgen file beside it and makes the scene ready to use. A character ("assetgen.character")
+## gets:
 ##
-## - every clip loops, or plays once, as the character file says;
+## - every clip looping, or playing once, as the character file says;
 ## - an AnimationTree: a state machine whose "Locomotion" state blends the idle, walk and run
 ##   clips by speed (metres per second), with a state for every clip; one-shots return to
 ##   Locomotion when they end;
 ## - the AssetgenCharacter script on the root, holding the clips' metadata.
+##
+## A prop or diorama ("assetgen.prop") gets a StaticBody3D with the collision shape its file asks
+## for, and the AssetgenProp script on the root, holding its size and footprint.
 
 const CharacterScript := preload("res://addons/assetgen/assetgen_character.gd")
+const PropScript := preload("res://addons/assetgen/assetgen_prop.gd")
+const CHARACTER_FORMAT := "assetgen.character"
+const PROP_FORMAT := "assetgen.prop"
 const LOCOMOTION := &"Locomotion"
 const FADE := 0.15
 
@@ -17,14 +24,22 @@ const FADE := 0.15
 func _post_import(scene: Node) -> Object:
 	var path := get_source_file().get_basename() + ".assetgen"
 	if not FileAccess.file_exists(path):
-		push_warning("assetgen: no character file at %s; imported as a plain model" % path)
+		push_warning("assetgen: no assetgen file at %s; imported as a plain model" % path)
 		return scene
 	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
-	if typeof(data) != TYPE_DICTIONARY or data.get("format") != "assetgen.character":
-		push_error("assetgen: %s is not an assetgen character file" % path)
+	if typeof(data) != TYPE_DICTIONARY:
+		push_error("assetgen: %s is not an assetgen file" % path)
 		return scene
+	var format = data.get("format")
+	if format != CHARACTER_FORMAT and format != PROP_FORMAT:
+		push_warning("assetgen: %s has format '%s', which this addon does not read; imported as a plain model" % [path, format])
+		return scene
+	var what := "prop" if format == PROP_FORMAT else "character"
 	if int(data.get("version", 1)) > 1:
-		push_error("assetgen: %s is a newer character format than this addon reads; update it" % path)
+		push_error("assetgen: %s is a newer %s format than this addon reads; update it" % [path, what])
+		return scene
+	if format == PROP_FORMAT:
+		build_prop(scene, data)
 		return scene
 	var player := _find_player(scene)
 	if player == null:
@@ -130,3 +145,78 @@ static func _idle(data: Dictionary, clips: Dictionary) -> StringName:
 		if clips[clip_name]["loop"]:
 			return clip_name
 	return clips.keys()[0] if clips.size() > 0 else &""
+
+
+static func build_prop(root: Node, data: Dictionary) -> void:
+	var collider: Dictionary = data.get("collider", {})
+	var collider_type := str(collider.get("type", "convex"))
+	if not collider_type in ["convex", "mesh", "box", "none"]:
+		push_warning("assetgen: %s asks for a '%s' collider, which this addon does not know; using its box" % [root.name, collider_type])
+		collider_type = "box"
+	var shapes := _prop_shapes(root, collider_type, collider.get("box", {}))
+	if collider_type != "none" and shapes.is_empty():
+		push_warning("assetgen: %s has no mesh to build a %s collider from" % [root.name, collider_type])
+	if not shapes.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "StaticBody"
+		root.add_child(body)
+		body.owner = root
+		for collision in shapes:
+			body.add_child(collision)
+			collision.owner = root
+
+	var model: Dictionary = data.get("model", {})
+	var footprint: Dictionary = data.get("footprint", {})
+	var outline := PackedVector2Array()
+	for point in footprint.get("outline", []):
+		outline.append(Vector2(float(point[0]), float(point[1])))
+	root.set_script(PropScript)
+	root.set("kind", str(data.get("kind", "prop")))
+	root.set("height", float(model.get("height", 0.0)))
+	root.set("size", _vector3(model.get("size", [])))
+	root.set("collider", collider_type)
+	root.set("footprint_radius", float(footprint.get("radius", 0.0)))
+	root.set("base_radius", float(footprint.get("base_radius", 0.0)))
+	root.set("outline", outline)
+	root.set("prompt", str(data.get("source", {}).get("prompt", "")))
+	root.set_meta("assetgen", data)
+
+
+## One CollisionShape3D per mesh for "convex" and "mesh", placed where the mesh is; a single one for "box".
+static func _prop_shapes(root: Node, collider_type: String, box: Dictionary) -> Array[CollisionShape3D]:
+	var shapes: Array[CollisionShape3D] = []
+	if collider_type == "box":
+		var collision := CollisionShape3D.new()
+		collision.name = "CollisionShape"
+		var shape := BoxShape3D.new()
+		shape.size = _vector3(box.get("size", [])).max(Vector3.ONE * 0.001)
+		collision.shape = shape
+		collision.position = _vector3(box.get("center", []))
+		shapes.append(collision)
+		return shapes
+	if collider_type == "none":
+		return shapes
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		var mesh: Mesh = node.mesh
+		if mesh == null:
+			continue
+		var collision := CollisionShape3D.new()
+		collision.name = "CollisionShape" if shapes.is_empty() else "CollisionShape%d" % (shapes.size() + 1)
+		collision.shape = mesh.create_convex_shape() if collider_type == "convex" else mesh.create_trimesh_shape()
+		collision.transform = _transform_in(root, node)
+		shapes.append(collision)
+	return shapes
+
+
+## The node's transform relative to root; the imported scene is not in a tree yet, so there is no global transform.
+static func _transform_in(root: Node, node: Node3D) -> Transform3D:
+	var transform := Transform3D.IDENTITY
+	var current: Node = node
+	while current != root and current is Node3D:
+		transform = (current as Node3D).transform * transform
+		current = current.get_parent()
+	return transform
+
+
+static func _vector3(values: Array) -> Vector3:
+	return Vector3(float(values[0]), float(values[1]), float(values[2])) if values.size() == 3 else Vector3.ZERO

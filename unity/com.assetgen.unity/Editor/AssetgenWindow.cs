@@ -8,14 +8,19 @@ using UnityEngine;
 
 namespace Assetgen.Editor
 {
-    /// <summary>Window > Assetgen: describe a character (or give a picture), generate it, and it lands in the project.</summary>
+    /// <summary>
+    /// Window > Assetgen: describe a character, a prop or a diorama (or give a picture), generate it, and it
+    /// lands in the project.
+    /// </summary>
     public sealed class AssetgenWindow : EditorWindow
     {
+        [SerializeField] AssetKind kind;
         [SerializeField] string prompt = "";
         [SerializeField] Texture2D image;
         [SerializeField] string imageFile = "";
         [SerializeField] string characterName = "";
         [SerializeField] float height = 1.8f;
+        [SerializeField] float staticHeight = 1f;
         [SerializeField] List<string> motions = new List<string>();
         [SerializeField] Vector2 scroll;
         [SerializeField] bool showAdvanced;
@@ -30,6 +35,18 @@ namespace Assetgen.Editor
         readonly Dictionary<string, Texture2D> m_Thumbnails = new Dictionary<string, Texture2D>();
         double m_NextRefresh;
         GUIStyle m_Wrapped, m_Muted, m_Title;
+
+        static readonly string[] KindLabels = { "Character", "Prop", "Diorama" };
+
+        static readonly string[] Examples =
+        {
+            "a goblin shaman with a lantern and a hooded cloak",
+            "a wooden barrel with iron bands",
+            "a ruined stone well in a small grassy clearing",
+        };
+
+        // Advanced settings that only matter to rigged, animated characters.
+        static readonly string[] CharacterSettings = { "motionSteps", "loopFrames", "rootMotion", "rigCandidates" };
 
         static readonly (string label, string[] motions)[] Presets =
         {
@@ -62,6 +79,8 @@ namespace Assetgen.Editor
                 motions = new List<string>(settings.defaultMotions.Count > 0 ? settings.defaultMotions : AssetgenSettings.StarterMotions.ToList());
             if (height <= 0f)
                 height = settings.defaultHeight;
+            if (staticHeight <= 0f)
+                staticHeight = AssetKind.Prop.DefaultHeight();
             m_MotionList = new ReorderableList(motions, typeof(string), true, true, true, true)
             {
                 drawHeaderCallback = DrawMotionHeader,
@@ -234,18 +253,27 @@ namespace Assetgen.Editor
 
         void DrawCreate()
         {
-            GUILayout.Label("New character", m_Title);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Label($"New {kind.Id()}", m_Title);
+                GUILayout.FlexibleSpace();
+                kind = (AssetKind)GUILayout.Toolbar((int)kind, KindLabels, GUILayout.Width(240));
+            }
+            if (kind == AssetKind.Prop)
+                GUILayout.Label("One static object, with a convex collider.", m_Muted);
+            else if (kind == AssetKind.Diorama)
+                GUILayout.Label("A whole set piece as one static model, with a mesh collider.", m_Muted);
             EditorGUILayout.LabelField("Describe it", EditorStyles.miniBoldLabel);
             prompt = EditorGUILayout.TextArea(prompt, m_Wrapped, GUILayout.MinHeight(48));
             if (string.IsNullOrEmpty(prompt))
-                GUILayout.Label("e.g. a goblin shaman with a lantern and a hooded cloak", m_Muted);
+                GUILayout.Label($"e.g. {Examples[(int)kind]}", m_Muted);
 
             using (new EditorGUILayout.HorizontalScope())
             {
                 image = (Texture2D)EditorGUILayout.ObjectField(new GUIContent("Or from a picture"), image, typeof(Texture2D), false);
                 if (GUILayout.Button("File…", GUILayout.Width(52)))
                 {
-                    var picked = EditorUtility.OpenFilePanel("Character picture", "", "png,jpg,jpeg,webp");
+                    var picked = EditorUtility.OpenFilePanel($"{KindLabels[(int)kind]} picture", "", "png,jpg,jpeg,webp");
                     if (!string.IsNullOrEmpty(picked))
                     {
                         imageFile = picked;
@@ -266,12 +294,18 @@ namespace Assetgen.Editor
             using (new EditorGUILayout.HorizontalScope())
             {
                 characterName = EditorGUILayout.TextField(new GUIContent("Name", "From the description when empty"), characterName);
-                height = EditorGUILayout.FloatField(new GUIContent("Height (m)"), Mathf.Max(0.05f, height), GUILayout.MaxWidth(220));
+                if (kind.IsStatic())
+                    staticHeight = EditorGUILayout.FloatField(new GUIContent("Height (m)"), Mathf.Max(0.05f, staticHeight), GUILayout.MaxWidth(220));
+                else
+                    height = EditorGUILayout.FloatField(new GUIContent("Height (m)"), Mathf.Max(0.05f, height), GUILayout.MaxWidth(220));
             }
-            EditorGUILayout.Space(4);
-            m_MotionList.DoLayoutList();
-            GUILayout.Label("Each motion is a clip. Start with \"An object\" and describe one thing; clips loop seamlessly " +
-                            "unless the line ends in [once].", m_Muted);
+            if (!kind.IsStatic())
+            {
+                EditorGUILayout.Space(4);
+                m_MotionList.DoLayoutList();
+                GUILayout.Label("Each motion is a clip. Start with \"An object\" and describe one thing; clips loop seamlessly " +
+                                "unless the line ends in [once].", m_Muted);
+            }
             DrawAdvanced();
 
             var picture = PictureBytes();
@@ -279,7 +313,7 @@ namespace Assetgen.Editor
             using (new EditorGUI.DisabledScope((m_Info == null && !canStart) || m_Busy ||
                                                (string.IsNullOrWhiteSpace(prompt) && picture == null)))
             {
-                var label = m_Busy ? (s_Starting ? "Starting the server…" : "Submitting…") : "Generate character";
+                var label = m_Busy ? (s_Starting ? "Starting the server…" : "Submitting…") : $"Generate {kind.Id()}";
                 if (GUILayout.Button(label, GUILayout.Height(30)))
                     Generate(picture);
             }
@@ -299,7 +333,10 @@ namespace Assetgen.Editor
                 DrawImageModel(generation.FindPropertyRelative("imageModel"));
                 foreach (var name in new[] { "idolSteps", "motionSteps", "promptStrength", "seed", "loopFrames", "rootMotion",
                                              "faceBudget", "textureSize", "rigCandidates" })
-                    EditorGUILayout.PropertyField(generation.FindPropertyRelative(name));
+                {
+                    if (!kind.IsStatic() || !CharacterSettings.Contains(name))
+                        EditorGUILayout.PropertyField(generation.FindPropertyRelative(name));
+                }
             }
             if (EditorGUI.EndChangeCheck())
             {
@@ -378,9 +415,12 @@ namespace Assetgen.Editor
                 var request = new JobRequest
                 {
                     prompt = prompt.Trim(),
+                    kind = kind.Id(),
                     name = characterName.Trim(),
-                    height = height,
-                    motions = motions.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).ToArray(),
+                    height = kind.IsStatic() ? staticHeight : height,
+                    motions = kind.IsStatic()
+                        ? Array.Empty<string>()
+                        : motions.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).ToArray(),
                     settings = AssetgenSettings.instance.generation.ToJob(),
                     image_backend = new ImageBackendRequest { model = AssetgenSettings.instance.generation.imageModel },
                 };
@@ -420,7 +460,7 @@ namespace Assetgen.Editor
             GUILayout.Label("On the server", m_Title);
             if (m_Jobs.Length == 0)
             {
-                GUILayout.Label(m_Info == null ? "Not connected." : "No characters yet.", m_Muted);
+                GUILayout.Label(m_Info == null ? "Not connected." : "Nothing generated yet.", m_Muted);
                 return;
             }
             foreach (var job in m_Jobs)
@@ -441,7 +481,8 @@ namespace Assetgen.Editor
                         var state = job.status == "running" ? $"running {job.stage}" : job.status;
                         if (!string.IsNullOrEmpty(job.error))
                             state += $": {job.error}";
-                        GUILayout.Label($"{job.id} · {state}", m_Muted);
+                        var made = string.IsNullOrEmpty(job.kind) || job.kind == "character" ? "" : $"{job.kind} · ";
+                        GUILayout.Label($"{job.id} · {made}{state}", m_Muted);
                         if (job.Active)
                         {
                             var bar = GUILayoutUtility.GetRect(18, 14, GUILayout.ExpandWidth(true));
@@ -505,19 +546,38 @@ namespace Assetgen.Editor
                         GUILayout.MinWidth(80));
                     GUILayout.Label($"{definition.clips.Count} clips · {definition.height:0.00} m", m_Muted);
                     GUILayout.FlexibleSpace();
-                    var prefab = CharacterBuilder.PrefabPath(path);
-                    if (GUILayout.Button("Select", EditorStyles.miniButtonLeft, GUILayout.Width(56)))
-                        Ping(File.Exists(prefab) ? prefab : path);
-                    using (new EditorGUI.DisabledScope(!File.Exists(prefab)))
-                    {
-                        if (GUILayout.Button("Add to scene", EditorStyles.miniButtonRight, GUILayout.Width(90)))
-                            AddToScene(prefab);
-                    }
+                    DrawProjectButtons(path, CharacterBuilder.PrefabPath(path));
+                }
+            }
+            foreach (var (path, definition) in CharacterImport.AllProps())
+            {
+                any = true;
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    var size = definition.size;
+                    var summary = $"{definition.kind} · {size.x:0.00} × {size.y:0.00} × {size.z:0.00} m";
+                    GUILayout.Label(new GUIContent($"{definition.name}", $"{summary} · {definition.colliderType} collider"),
+                        GUILayout.MinWidth(80));
+                    GUILayout.Label(summary, m_Muted);
+                    GUILayout.FlexibleSpace();
+                    DrawProjectButtons(path, PropBuilder.PrefabPath(path));
                 }
             }
             if (!any)
                 GUILayout.Label("None yet. Generated characters are imported into " +
-                                $"{AssetgenSettings.instance.charactersFolder}.", m_Muted);
+                                $"{AssetgenSettings.instance.charactersFolder}, props and dioramas into " +
+                                $"{AssetgenSettings.instance.propsFolder}.", m_Muted);
+        }
+
+        void DrawProjectButtons(string path, string prefab)
+        {
+            if (GUILayout.Button("Select", EditorStyles.miniButtonLeft, GUILayout.Width(56)))
+                Ping(File.Exists(prefab) ? prefab : path);
+            using (new EditorGUI.DisabledScope(!File.Exists(prefab)))
+            {
+                if (GUILayout.Button("Add to scene", EditorStyles.miniButtonRight, GUILayout.Width(90)))
+                    AddToScene(prefab);
+            }
         }
 
         static void Ping(string assetPath)

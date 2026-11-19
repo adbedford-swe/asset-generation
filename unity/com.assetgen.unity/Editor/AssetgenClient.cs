@@ -40,7 +40,7 @@ namespace Assetgen.Editor
         public Task<JobInfo> CancelAsync(string id, CancellationToken ct = default) =>
             SendJsonAsync<JobInfo>(HttpMethod.Post, $"jobs/{Uri.EscapeDataString(id)}/cancel", "{}", ct);
 
-        /// <summary>The job's character packaged for Unity (a zip of name/name.glb, name.assetgen, ...).</summary>
+        /// <summary>The job's asset packaged for Unity (a zip of name/name.glb, name.assetgen, ...).</summary>
         public Task<byte[]> ExportAsync(string id, CancellationToken ct = default) =>
             GetBytesAsync($"jobs/{Uri.EscapeDataString(id)}/export/unity", ct);
 
@@ -108,12 +108,34 @@ namespace Assetgen.Editor
 #pragma warning restore 0649
     }
 
+    /// <summary>What a job makes. Props and dioramas are static: no rig and no motions.</summary>
+    public enum AssetKind
+    {
+        Character,
+        Prop,
+        Diorama,
+    }
+
+    public static class AssetKinds
+    {
+        /// <summary>The kind as the server and the .assetgen files name it: character, prop or diorama.</summary>
+        public static string Id(this AssetKind kind) => kind.ToString().ToLowerInvariant();
+
+        public static bool IsStatic(this AssetKind kind) => kind != AssetKind.Character;
+
+        /// <summary>The height to ask for when none is given, in metres: the project's default for characters, the
+        /// server's 1 m for props and dioramas.</summary>
+        public static float DefaultHeight(this AssetKind kind) =>
+            kind.IsStatic() ? 1f : AssetgenSettings.instance.defaultHeight;
+    }
+
     // The API's JSON, for JsonUtility. Field names follow the server.
 #pragma warning disable 0649
     [Serializable]
     public sealed class JobRequest
     {
         public string prompt;
+        public string kind = "character";
         public string image;
         public string name;
         public string[] motions;
@@ -163,6 +185,7 @@ namespace Assetgen.Editor
     {
         public string id;
         public string name;
+        public string kind;
         public string status;
         public string stage;
         public float progress;
