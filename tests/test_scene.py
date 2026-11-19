@@ -257,3 +257,21 @@ def test_plan_retries_until_the_spec_holds():
     first, retry = StubChat.requests[1], StubChat.requests[2]  # the first asked for JSON mode and was refused
     assert "24 by 24 metres" in first["messages"][1]["content"] and "response_format" not in first
     assert "height" in retry["messages"][-1]["content"]
+
+
+def test_placed_objects_that_overlap_are_moved_apart():
+    spec = parse(spec_of(objects=[
+        {"id": "boat", "prompt": "a boat", "height": 1.5, "place": [[0, 0]]},
+        {"id": "crate", "prompt": "a crate", "height": 0.8, "place": [[0, 0.5], [0, 0.5, 0.8]]},
+        {"id": "tent", "prompt": "a tent", "height": 2.0, "place": [[0.2, -0.3]]}]))
+    footprints = {"boat": Footprint(1.5, 1.8, 1.6), "crate": Footprint(0.8, 0.5, 0.5),
+                  "tent": Footprint(2.0, 1.75, 1.6)}
+    layout = plan(spec, footprints, terrain.heightfield(spec.ground.size))
+    by = {i.node: i for i in layout.instances}
+    ground_level = [by["boat_0"], by["crate_0"], by["tent_0"]]
+    for k, a in enumerate(ground_level):
+        for b in ground_level[k + 1:]:
+            ra, rb = (max(footprints[i.object].base_radius, 0.5 * footprints[i.object].radius) for i in (a, b))
+            assert math.dist(a.position[::2], b.position[::2]) >= ra + rb + 0.1 - 1e-3
+    assert by["crate_1"].position == [0.0, 0.5, 0.8]  # given a height: stacked on purpose, left alone
+    assert sum("so it does not overlap" in w for w in layout.warnings) == 3

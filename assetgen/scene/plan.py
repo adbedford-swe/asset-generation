@@ -54,6 +54,8 @@ the ground and x and z within half the ground's size. "yaw" turns an object: deg
 - "scatter" spreads repeated things (trees, rocks, bushes, debris): "count", "region" (all, edge, centre, or \
 [[x0, z0], [x1, z1]]), "scale" [smallest, largest], and "tilt": true for things that lean with the slope.
 - Give each object exactly one of "place" or "scatter". Keep the counts sensible for the ground's size.
+- Leave room between placed objects: their centres at least half the sum of their widths apart, usually more, \
+arranged the way the description suggests (around a centre, along a path, in a row), not all on one line.
 - "style" is the look shared by every object: art style, texture style, lighting. One line.
 - "ground": "size" [width, depth] in metres, "prompt" is the ground surface's material (seen from above), \
 "relief" is the height of its hills in metres (0 for floors and streets).

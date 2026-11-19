@@ -137,26 +137,68 @@ def _rotation(ground: Heightfield, x: float, z: float, yaw: float, tilt: bool) -
     return q
 
 
+def separate(points: list, radii: list, movable: list, seed: int = 0, gap: float = 0.1,
+             iterations: int = 200) -> tuple[list[list[float]], list[float]]:
+    """Push apart circles (x, z, radius) that overlap, moving each pair by as little as it takes and leaving the
+    unmovable ones where they are. Returns the new centres and how far each moved."""
+    pts = np.array(points, dtype=np.float64).reshape(-1, 2)
+    start = pts.copy()
+    rng = np.random.default_rng(seed)
+    for _ in range(iterations):
+        overlapping = False
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                if not (movable[i] or movable[j]):
+                    continue
+                d = pts[j] - pts[i]
+                dist = float(np.hypot(*d))
+                need = radii[i] + radii[j] + gap
+                if dist >= need - 1e-6:
+                    continue
+                overlapping = True
+                if dist > 1e-9:
+                    direction = d / dist
+                else:  # on top of each other: any way apart will do
+                    angle = rng.uniform(0, 2 * math.pi)
+                    direction = np.array([math.cos(angle), math.sin(angle)])
+                push = need - dist
+                if movable[i] and movable[j]:
+                    pts[i] -= direction * push / 2
+                    pts[j] += direction * push / 2
+                elif movable[i]:
+                    pts[i] -= direction * push
+                else:
+                    pts[j] += direction * push
+        if not overlapping:
+            break
+    return pts.tolist(), np.hypot(*(pts - start).T).tolist()
+
+
 def plan(spec: SceneSpec, footprints: dict[str, Footprint], ground: Heightfield) -> Layout:
     """Lay out every object of ``spec`` on ``ground``; ``footprints`` holds each object's measurements."""
     warnings: list[str] = []
     hw, hd = spec.ground.size[0] / 2, spec.ground.size[1] / 2
 
-    # Objects placed by hand: their spots, a level pad under each, and the anchors "face" can point at.
-    placed: list[tuple] = []
+    # Objects placed by hand: moved apart where their bases overlap, a level pad under each, and the anchors
+    # "face" can point at. Objects given a height (stacked on something on purpose) stay where they are.
+    placed = [(o, p) for o in spec.objects for p in o.place]
+    spots, moved = separate([[p.position[0], p.position[-1]] for _, p in placed],
+                            [max(footprints[o.id].base_radius, 0.5 * footprints[o.id].radius) * p.scale
+                             for o, p in placed],
+                            [len(p.position) == 2 for _, p in placed], spec.seed)
     anchors: dict[str, list[float]] = {}
     pads = []
-    for o in spec.objects:
+    for (o, p), (x, z), shift in zip(placed, spots, moved):
         fp = footprints[o.id]
-        for p in o.place:
-            x, z = p.position[0], p.position[-1]
-            if abs(x) > hw or abs(z) > hd:
-                warnings.append(f"{o.id} at ({x:g}, {z:g}) is off the {spec.ground.size[0]:g} x "
-                                f"{spec.ground.size[1]:g} m ground")
-            anchors.setdefault(o.id, [x, z])
-            placed.append((o, p))
-            if len(p.position) == 2 and not p.tilt and spec.ground.flatten > 0:
-                pads.append((x, z, spec.ground.flatten * max(fp.base_radius, 0.25 * fp.radius) * p.scale))
+        if shift > 0.01:
+            warnings.append(f"{o.id} moved {shift:.2f} m from ({p.position[0]:g}, {p.position[-1]:g}) so it does "
+                            f"not overlap its neighbours")
+        if abs(x) > hw or abs(z) > hd:
+            warnings.append(f"{o.id} at ({x:.2f}, {z:.2f}) is off the {spec.ground.size[0]:g} x "
+                            f"{spec.ground.size[1]:g} m ground")
+        anchors.setdefault(o.id, [x, z])
+        if len(p.position) == 2 and not p.tilt and spec.ground.flatten > 0:
+            pads.append((x, z, spec.ground.flatten * max(fp.base_radius, 0.25 * fp.radius) * p.scale))
     ground = flatten(ground, pads)
 
     instances: list[Instance] = []
@@ -174,9 +216,8 @@ def plan(spec: SceneSpec, footprints: dict[str, Footprint], ground: Heightfield)
         instances.append(Instance(o.id, k, [round(x, 4), round(y, 4), round(z, 4)], round(yaw, 3), round(scale, 4),
                                   [round(float(v), 6) for v in q], by_hand))
 
-    for o, p in placed:
+    for (o, p), (x, z) in zip(placed, spots):
         fp = footprints[o.id]
-        x, z = p.position[0], p.position[-1]
         rng = np.random.default_rng(_seed(spec.seed, f"{o.id}/{len(instances)}"))
         add(o, x, z, p.position[1] if len(p.position) == 3 else None, _yaw(p.yaw, (x, z), rng, anchors), p.scale,
             p.tilt, True)
