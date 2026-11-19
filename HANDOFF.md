@@ -115,6 +115,46 @@ which never moves the bones without a camera (now Unity's default, AlwaysAnimate
 was internal to another assembly. Not checked: a real stable-diffusion.cpp server (only the stub that speaks its API), ComfyUI, and the text stage
 feeding real Idol (Idol's encoders are not on the laptop).
 
+## Props, scenes and concept pictures (0.4.0 to 0.6.0)
+
+Three pieces, each its own module:
+
+- **Props and dioramas** (`--kind prop|diorama`, `assetgen.prop`): static assets that stop after the mesh. Finalize
+  scales and grounds the asset and writes an `assetgen.prop` file with its collider and footprint.
+- **Scenes** (`assetgen.scene`):
+  - a spec of objects, each made as a prop run, then placed or scattered;
+  - ground: a tileable texture on a heightfield;
+  - a layout that keeps footprints apart, colours harmonized, and one instanced glTF;
+  - an LLM planner (`scene plan`); server scene jobs and a web UI Scene tab;
+  - Godot and Unity import.
+- **Concept pictures** (`assetgen.scene.decompose`): Grounding DINO, SAM and Depth Anything V2 (metric) turn one picture
+  of a scene into a spec. The objects are cut out and stood on the fitted ground plane, turned by `seen_from`, and the
+  picture's ground is projected onto the scene's.
+
+Checked on the laptop (Windows, CUDA, 4 GB):
+
+- `pytest`, with Godot 4.7.2 headless for a character, props (every collider) and a built scene.
+- A prop run through the real mesh and finalize stages from a splat.
+- A scene build whose object went through the real mesh stage, with a ground texture from a real sd-server
+  (SD 1.5 q4).
+- img2img against that sd-server.
+- The planner against a real local model (Qwen 3.5 0.8B served by `transformers serve`).
+- Decomposition with the real vision models on concept pictures drawn by that sd-server. Barns and haystacks were
+  found and placed, a cart found on a barn's wall was dropped, a field patch taken for a haystack was dropped, and
+  the ground was projected. I looked at the overlays.
+- `seen_from` checked end to end with the real orient stage: a fox placed at a known turn matched its true shape to
+  within 2 to 4% of its height. When the picture showed the fox's back, orient took the back for the front, which it
+  assumes of characters; placement compensates, because `view` is measured in the same frame.
+- The web UI: planning, taking a drawn picture apart, and a scene job in the viewer, driven in a browser.
+
+Not checked:
+
+- Idol on object pictures or cut-outs (its gated encoders are not on the laptop), so no scene has been built from
+  prompts or cut-outs end to end.
+- The Unity package's prop and scene code: Unity is not on this laptop. The code was written against the package's
+  existing API use and type-checked with Roslyn without Unity's assemblies.
+- Ground textures from a capable image model.
+
 ## First thing to do on the ROCm box
 
 ```bash

@@ -490,10 +490,56 @@ class JobManager:
         (folder / "scene.json").write_text(json.dumps(job.scene or {"name": name}, indent=2))
         return self._enqueue(job)
 
+    def decompose(self, *, image: Path | None = None, prompt: str | None = None, objects: list[str],
+                  name: str | None = None, known: dict[str, float] | None = None, fov: float = 55.0,
+                  setting: str = "outdoor", each: bool = False, redraw: float = 0.0, style: str = "",
+                  image_spec: ImageSpec | None = None) -> dict:
+        """A scene spec from a picture of the whole scene (or one drawn from ``prompt`` first): its objects cut out
+        and placed where the picture has them. Files land in a draft folder the spec names as "draft:<id>/..."."""
+        from .imagegen import write
+        from .scene.decompose import decompose
+
+        if not objects:
+            raise ValueError("objects lists what to look for in the picture")
+        draft_id = f"{time.strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
+        folder = self.root / DRAFTS / draft_id
+        folder.mkdir(parents=True)
+        name = slug(name or prompt or "scene")
+        if image is None:
+            if not prompt:
+                raise ValueError("give a picture of the scene, or a prompt to draw one")
+            image = write(prompt, folder / "concept", replace(image_spec or self.image_spec, kind="concept"),
+                          log=lambda *_: None)
+        spec = decompose(Path(image), objects, folder / f"{name}.json", name, style, fov, setting, known, each,
+                         redraw, log=lambda *_: None)
+
+        def drafted(value):
+            return f"draft:{draft_id}/{value}" if isinstance(value, str) and value else value
+
+        for o in spec["objects"]:
+            o["image"] = drafted(o.get("image"))
+        spec["ground"]["texture"] = drafted(spec["ground"].get("texture"))
+        spec["concept"] = drafted(spec.get("concept"))
+        base = f"/api/v1/drafts/{draft_id}"
+        return {"id": draft_id, "spec": spec, "found": f"{base}/{name}_found.png",
+                "parts": [f"{base}/{o['image'].split('/', 1)[1]}" for o in spec["objects"]]}
+
+    def draft_file(self, draft_id: str, path: str) -> Path:
+        if not re.fullmatch(r"[0-9]+-[0-9a-f]+", draft_id or ""):
+            raise KeyError(draft_id)
+        folder = (self.root / DRAFTS / draft_id).resolve()
+        target = (folder / path).resolve()
+        if folder not in target.parents or not target.is_file():
+            raise KeyError(f"{draft_id}/{path}")
+        return target
+
     def _resolve_uploads(self, spec: dict) -> dict:
         def resolve(value):
             if isinstance(value, str) and value.startswith("upload:"):
                 return str(self.upload_path(value[len("upload:"):]))
+            if isinstance(value, str) and value.startswith("draft:"):
+                draft_id, _, path = value[len("draft:"):].partition("/")
+                return str(self.draft_file(draft_id, path))
             return value
 
         spec = json.loads(json.dumps(spec))
@@ -695,7 +741,8 @@ class LanguageModel(BaseModel):
 
 class SceneRequest(BaseModel):
     spec: dict | None = Field(None, description="A scene spec (GET /scenes/example; schema/scene-spec.schema.json). "
-                                                "Files can be named \"upload:<id>\" from POST /uploads.")
+                                                "Files can be named \"upload:<id>\" from POST /uploads, or "
+                                                "\"draft:<id>/<file>\" from POST /scenes/decompose.")
     prompt: str | None = Field(None, description="Or describe the scene; a language model plans the spec.",
                                examples=["a forest camp at dusk with a tent, a campfire and logs to sit on"])
     name: str | None = None
@@ -704,6 +751,23 @@ class SceneRequest(BaseModel):
                                                                "for them.")
     settings: dict | None = Field(None, description="Any of: device, faces, texture, voxels, idol_steps")
     llm: LanguageModel | None = None
+
+
+class DecomposeRequest(BaseModel):
+    image: str | None = Field(None, description="The picture of the whole scene, as a data URL or base64.")
+    upload: str | None = Field(None, description="Or an id from POST /uploads.")
+    prompt: str | None = Field(None, description="Or a description to draw the picture from first.")
+    objects: list[str] = Field(..., description="What to look for in the picture.",
+                               examples=[["red barn", "haystack", "wooden cart"]])
+    name: str | None = None
+    style: str | None = Field(None, description="Added to every object's prompt when the scene is built.")
+    known: dict[str, float] | None = Field(None, description="True heights of some objects (label: metres), to "
+                                                             "correct the depth's scale.")
+    fov: float = Field(55.0, description="The picture's horizontal field of view, degrees.")
+    setting: str = Field("outdoor", description="outdoor or indoor: which depth model")
+    each: bool = Field(False, description="Every object its own prop (default: one per label).")
+    redraw: float = Field(0.0, ge=0, le=1, description="Redraw each cut-out in the scene's style first.")
+    image_backend: ImageBackend | None = None
 
 
 class PlanRequest(BaseModel):
@@ -863,6 +927,33 @@ def create_api(manager: JobManager, token: str | None = None):
             raise HTTPException(422, str(e))
         except Exception as e:
             raise HTTPException(502, f"language model failed: {e}")
+
+    @router.post("/scenes/decompose", summary="A scene spec from a picture of the whole scene: its objects cut "
+                                               "out and placed where the picture has them")
+    def scene_decompose(req: DecomposeRequest):
+        if req.setting not in ("outdoor", "indoor"):
+            raise HTTPException(422, "setting is outdoor or indoor")
+        try:
+            image = None
+            if req.image:
+                ext, data = decode_image(req.image)
+                image = manager.upload_path(manager.save_upload(f"{req.name or 'concept'}{ext}", data))
+            elif req.upload:
+                image = manager.upload_path(req.upload)
+            return manager.decompose(image=image, prompt=req.prompt, objects=req.objects, name=req.name,
+                                     known=req.known, fov=req.fov, setting=req.setting, each=req.each,
+                                     redraw=req.redraw, style=req.style or "", image_spec=spec_of(req.image_backend))
+        except KeyError as e:
+            raise HTTPException(404, f"not found: {e}")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @router.get("/drafts/{draft_id}/{path:path}", summary="A file made by /images or /scenes/decompose")
+    def draft_file(draft_id: str, path: str):
+        try:
+            return FileResponse(manager.draft_file(draft_id, path))
+        except KeyError:
+            raise HTTPException(404, "no such file")
 
     @router.post("/scenes", status_code=202, summary="Build a scene from a spec (or a description) -> job")
     def create_scene(req: SceneRequest):

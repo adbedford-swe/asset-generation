@@ -162,6 +162,16 @@ def make_objects(spec: SceneSpec, out: Path, devices: list[str], image_spec: Ima
         raise SystemExit("some objects could not be made:\n  " + "\n  ".join(failed))
 
 
+def view_of(folder: Path) -> float:
+    """Where the camera of an object's picture stood, as a yaw from the object's front: what the mesh stage found
+    when it turned the object to face +Z. 0 (its front) when the object was not meshed here."""
+    path = Path(folder) / "1_mesh" / "orientation.json"
+    if not path.exists():
+        return 0.0
+    o = json.loads(path.read_text())
+    return float(o["camera_yaw_deg"] - o["facing_yaw_deg"]) % 360
+
+
 def make_ground_texture(spec: SceneSpec, out: Path, image_spec: ImageSpec, log=print) -> Path | None:
     """ground/texture.png: the given picture, or one drawn from the ground's prompt; tileable either way."""
     from PIL import Image
@@ -172,8 +182,9 @@ def make_ground_texture(spec: SceneSpec, out: Path, image_spec: ImageSpec, log=p
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / "texture.png"
     if spec.ground.texture:
-        source = Image.open(spec.ground.texture).convert("RGB")
-        Image.fromarray(tileable(np.asarray(source))).save(target)
+        source = np.asarray(Image.open(spec.ground.texture).convert("RGB"))
+        covers_all = spec.ground.tile >= max(spec.ground.size) - 1e-6  # one picture of the whole ground: no repeats
+        Image.fromarray(source if covers_all else tileable(source)).save(target)
         return target
     if not spec.ground.prompt:
         return None
@@ -231,7 +242,8 @@ def build(spec: SceneSpec, out: Path, devices: list[str] | None = None, image_sp
         return texture, field
 
     texture_path, field = step("ground", ground)
-    layout = step("layout", lambda: plan(spec, {k: Footprint.of(v) for k, v in objects.items()}, field))
+    layout = step("layout", lambda: plan(spec, {k: Footprint.of(v, view_of(out / "props" / k))
+                                                 for k, v in objects.items()}, field))
     for w in layout.warnings:
         log(f"   warning: {w}")
     counts = {o.id: sum(1 for i in layout.instances if i.object == o.id) for o in spec.objects}

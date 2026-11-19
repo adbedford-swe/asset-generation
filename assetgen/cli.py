@@ -15,6 +15,7 @@
   assetgen scene example --out camp.json                          (a scene spec to start from)
   assetgen scene plan --text "a forest camp at dusk" --llm-base-url http://127.0.0.1:8080/v1 --out camp.json
   assetgen scene build camp.json --out outputs/camp               (every object, the ground, one glTF)
+  assetgen scene decompose farm.png --objects "red barn, haystack, cart" --out farm.json  (from a concept picture)
   assetgen export outputs/camp --engine godot --project ~/my_godot_game
   assetgen serve [--host 0.0.0.0]                       HTTP API and web UI (also: python server.py)
   assetgen synth --mesh Fox.glb --out testdata/fox      (Idol-like test input from a mesh)
@@ -232,6 +233,34 @@ def cmd_scene(a) -> None:
             raise SystemExit(str(e))
         Path(a.out).write_text(json.dumps(data, indent=2) + "\n")
         print(f"wrote {a.out}; build it with: assetgen scene build {a.out}")
+    elif a.scene_cmd == "decompose":
+        from .scene.decompose import decompose
+
+        names = [n.strip() for n in a.objects.split(",") if n.strip()]
+        if not names:
+            raise SystemExit("--objects lists what to look for, e.g. \"red barn, haystack, wooden cart\"")
+        image = a.image
+        if image is None:
+            if not a.text:
+                raise SystemExit("give a picture, or --text to draw one first")
+            from .imagegen import write
+
+            spec = image_spec(a)
+            spec.kind = "concept"
+            image = write(a.text, Path(a.out).with_name(f"{Path(a.out).stem}_concept"), spec, a.seed)
+        known = {}
+        for item in a.known or []:
+            label, _, height = item.partition("=")
+            try:
+                known[label.strip()] = float(height)
+            except ValueError:
+                raise SystemExit(f"--known takes label=metres, e.g. \"red barn=6\" (got {item!r})")
+        try:
+            decompose(Path(image), names, Path(a.out), a.name, a.style or "", a.fov, a.setting, known, a.each,
+                      a.redraw, a.device)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        print(f"wrote {a.out}; check {Path(a.out).stem}_found.png, then: assetgen scene build {a.out}")
     elif a.scene_cmd == "build":
         from .scene.build import build
 
@@ -252,7 +281,9 @@ def cmd_scene(a) -> None:
             spec = load(Path(a.spec))
         except SpecError as e:
             raise SystemExit(f"{a.spec}: {e}")
-        print(f"{a.spec}: {len(spec.objects)} kinds of object on {spec.ground.size[0]:g} x {spec.ground.size[1]:g} m")
+        n = len(spec.objects)
+        print(f"{a.spec}: {n} kind{'' if n == 1 else 's'} of object on {spec.ground.size[0]:g} x "
+              f"{spec.ground.size[1]:g} m")
 
 
 def cmd_export(a) -> None:
@@ -360,6 +391,30 @@ def main(argv=None) -> None:
     bd.add_argument("--image-steps", type=int, default=None)
     bd.add_argument("--image-keep-loaded", action="store_true")
     bd.set_defaults(raw_prompt=False)
+    dc = scs.add_parser("decompose", help="a scene spec from a picture of the whole scene: its objects cut out "
+                                          "and placed where the picture has them")
+    dc.add_argument("image", nargs="?", default=None, help="the picture (concept art, a render, a photo)")
+    dc.add_argument("--text", default=None, help="no picture: draw one of this description first")
+    dc.add_argument("--objects", required=True, help='what to look for, comma-separated: "red barn, haystack"')
+    dc.add_argument("--out", required=True, help="the spec to write; cut-outs go beside it")
+    dc.add_argument("--name", default=None)
+    dc.add_argument("--style", default=None, help="added to every object's prompt")
+    dc.add_argument("--known", nargs="+", default=None, metavar="LABEL=METRES",
+                    help='true heights of some objects, to correct the depth\'s scale: "red barn=6"')
+    dc.add_argument("--fov", type=float, default=55.0, help="the picture's horizontal field of view, degrees")
+    dc.add_argument("--setting", choices=["outdoor", "indoor"], default="outdoor", help="which depth model")
+    dc.add_argument("--each", action="store_true", help="every object its own prop (default: one per label)")
+    dc.add_argument("--redraw", type=float, default=0.0,
+                    help="redraw each cut-out in the scene's style first (image-to-image strength, e.g. 0.4), "
+                         "which completes parts other objects hid")
+    dc.add_argument("--device", default=None, help="for the vision models (default: cuda when there is one)")
+    dc.add_argument("--seed", type=int, default=0)
+    for flag in ("--image-backend", "--image-url", "--image-model", "--image-size", "--comfy-workflow",
+                 "--image-command"):
+        dc.add_argument(flag, default=None)
+    dc.add_argument("--image-steps", type=int, default=None)
+    dc.add_argument("--image-keep-loaded", action="store_true")
+    dc.set_defaults(raw_prompt=False)
     ck = scs.add_parser("check", help="check a scene spec without building it")
     ck.add_argument("spec")
     sc.set_defaults(func=cmd_scene)

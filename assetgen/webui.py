@@ -141,7 +141,10 @@ def list_runs(manager: JobManager) -> list[tuple[str, str]]:
     runs = []
     for job in manager.list(200):
         done = completed_stages(job.folder)
-        state = job.status if job.active else (", ".join(done) if done else "nothing finished")
+        if job.kind == "scene":
+            state = f"scene, {job.status}"
+        else:
+            state = job.status if job.active else (", ".join(done) if done else "nothing finished")
         runs.append((f"{job.id}  ·  {state}", job.id))
     return runs
 
@@ -286,6 +289,34 @@ def build(manager: JobManager | None = None):
         except Exception as e:
             raise gr.Error(f"The language model failed: {e}")
 
+    def take_apart(picture, description, objects, known_text, redraw, each, style):
+        names = [n.strip() for n in (objects or "").split(",") if n.strip()]
+        if not names:
+            raise gr.Error("List what to look for in the picture, e.g. red barn, haystack, wooden cart.")
+        if not picture and not (description or "").strip():
+            raise gr.Error("Give a picture of the whole scene, or describe it to have one drawn.")
+        known = {}
+        for item in (known_text or "").split(","):
+            label, _, metres = item.partition("=")
+            if label.strip() and metres.strip():
+                try:
+                    known[label.strip()] = float(metres)
+                except ValueError:
+                    raise gr.Error(f"Known heights are label=metres, e.g. red barn=6 (not {item.strip()!r}).")
+        try:
+            found = manager.decompose(image=Path(picture) if picture else None,
+                                      prompt=None if picture else description.strip(), objects=names,
+                                      name=slug(description or "scene")[:32] if description else None, known=known,
+                                      each=bool(each), redraw=float(redraw or 0), style=(style or "").strip())
+        except ValueError as e:
+            raise gr.Error(str(e))
+        except Exception as e:
+            raise gr.Error(f"Taking the picture apart failed: {e}")
+        folder = manager.root / "_drafts" / found["id"]
+        shots = [(str(folder / found["found"].rsplit("/", 1)[1]), "What was found, and the ground plane (1 m grid)")]
+        shots += [(str(folder / p.split(f"{found['id']}/", 1)[1]), p.rsplit("/", 1)[1]) for p in found["parts"]]
+        return json.dumps(found["spec"], indent=2), shots
+
     def start_scene(spec_text, description, reuse, shown, *rest):
         try:
             spec = json.loads(spec_text or "")
@@ -427,6 +458,23 @@ def build(manager: JobManager | None = None):
                     with gr.Row():
                         plan_button = gr.Button("Plan with the language model")
                         example_button = gr.Button("Example")
+                    with gr.Accordion("From a picture of the whole scene", open=False):
+                        gr.Markdown("Concept art, a render or a photo: the objects named are found, cut out and "
+                                    "stood where the picture has them, and the picture's ground becomes the "
+                                    "scene's. Without a picture, one is drawn from the description above.")
+                        picture = gr.Image(type="filepath", label="The scene", height=220)
+                        found_objects = gr.Textbox(label="Objects to look for", max_lines=1,
+                                                   placeholder="red barn, haystack, wooden cart")
+                        with gr.Row():
+                            known_heights = gr.Textbox(label="Known heights (m)", max_lines=1,
+                                                       placeholder="red barn=6", scale=2)
+                            redraw_parts = gr.Slider(0, 0.8, value=0.0, step=0.05, label="Redraw cut-outs",
+                                                     info="Image-to-image strength: completes hidden parts")
+                        with gr.Row():
+                            each_part = gr.Checkbox(value=False, label="Every object its own prop")
+                            parts_style = gr.Textbox(label="Style", max_lines=1, scale=2,
+                                                     placeholder="added to every object's prompt")
+                        apart_button = gr.Button("Take the picture apart")
                     with gr.Accordion("Language model", open=False):
                         llm_scene_url = gr.Textbox(value=manager.llm[0] or "", label="Endpoint", max_lines=1,
                                                    placeholder="http://127.0.0.1:8080/v1 (llama.cpp, vLLM, Ollama, "
@@ -494,7 +542,7 @@ def build(manager: JobManager | None = None):
                 viewer = gr.HTML(EMPTY_VIEWER)
                 with gr.Row():
                     clip = gr.Dropdown([], label="Clip", interactive=True)
-                    download = gr.File(label="Character (.glb)", interactive=False)
+                    download = gr.File(label="Model (.glb)", interactive=False)
                     exports = gr.File(label="For Unity / Godot (.zip)", file_count="multiple", interactive=False)
                 summary = gr.Markdown("")
                 gallery = gr.Gallery(label="Stages", columns=3, height=300, object_fit="contain")
@@ -514,6 +562,8 @@ def build(manager: JobManager | None = None):
         example_button.click(scene_example, None, scene_spec)
         plan_button.click(plan_scene, [scene_text, llm_scene_url, llm_scene_model], scene_spec)
         go_scene.click(start_scene, [scene_spec, scene_text, reuse, job_state, *common], outputs)
+        apart_button.click(take_apart, [picture, scene_text, found_objects, known_heights, redraw_parts, each_part,
+                                        parts_style], [scene_spec, gallery])
         stop.click(cancel, job_state, None)
         backend.change(backend_status, [backend, backend_url, image_model], [backend_info, image_model])
         backend_url.blur(backend_status, [backend, backend_url, image_model], [backend_info, image_model])

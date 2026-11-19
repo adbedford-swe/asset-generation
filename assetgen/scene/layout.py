@@ -24,15 +24,17 @@ from .terrain import Heightfield, flatten
 
 @dataclass
 class Footprint:
-    """What layout needs to know about a generated object, at its generated height."""
+    """What layout needs to know about a generated object, at its generated height. ``view`` is where the
+    camera of the picture it was made from stood, as a yaw from its front (0: the picture showed its front)."""
     height: float
     radius: float
     base_radius: float
+    view: float = 0.0
 
     @classmethod
-    def of(cls, prop_file: dict) -> "Footprint":
+    def of(cls, prop_file: dict, view: float = 0.0) -> "Footprint":
         fp = prop_file["footprint"]
-        return cls(prop_file["model"]["height"], fp["radius"], fp["base_radius"])
+        return cls(prop_file["model"]["height"], fp["radius"], fp["base_radius"], view)
 
 
 @dataclass
@@ -120,7 +122,10 @@ def _region(region, size, margin: float, band: float):
     return lambda rng: (rng.uniform(-hw, hw), rng.uniform(-hd, hd)), lambda p: True
 
 
-def _yaw(value, position, rng, anchors: dict) -> float:
+def _yaw(value, position, rng, anchors: dict, view: float = 0.0) -> float:
+    if isinstance(value, dict) and "seen_from" in value:
+        # Turn the side the object's picture showed towards the direction the scene's picture saw it from.
+        return (value["seen_from"] - view) % 360
     if isinstance(value, dict):
         target = value["face"]
         target = anchors.get(target, position) if isinstance(target, str) else target
@@ -219,8 +224,8 @@ def plan(spec: SceneSpec, footprints: dict[str, Footprint], ground: Heightfield)
     for (o, p), (x, z) in zip(placed, spots):
         fp = footprints[o.id]
         rng = np.random.default_rng(_seed(spec.seed, f"{o.id}/{len(instances)}"))
-        add(o, x, z, p.position[1] if len(p.position) == 3 else None, _yaw(p.yaw, (x, z), rng, anchors), p.scale,
-            p.tilt, True)
+        add(o, x, z, p.position[1] if len(p.position) == 3 else None, _yaw(p.yaw, (x, z), rng, anchors, fp.view),
+            p.scale, p.tilt, True)
         occupied.append((x, z, fp.radius * p.scale, True))
 
     for o in spec.objects:
@@ -249,7 +254,7 @@ def plan(spec: SceneSpec, footprints: dict[str, Footprint], ground: Heightfield)
 
             if any(too_close(*other) for other in occupied):
                 continue
-            add(o, x, z, None, _yaw(s.yaw, (x, z), rng, anchors), scale, s.tilt, False)
+            add(o, x, z, None, _yaw(s.yaw, (x, z), rng, anchors, fp.view), scale, s.tilt, False)
             occupied.append((x, z, mine, False))
             made += 1
         if made < s.count:

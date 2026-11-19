@@ -27,7 +27,9 @@ look; :mod:`assetgen.scene.harmonize` evens out the rest.
 Positions are (x, z) in metres on the ground, or (x, y, z) to set the height instead
 of standing the object on the ground. Yaw is in degrees about +Y (0 faces +Z), or
 "random", or ``{"face": <object id or [x, z]>}`` to turn the object's front towards
-something. Scale multiplies the object's height.
+something, or ``{"seen_from": <degrees>}`` to turn it so that a viewer in that
+direction sees the side its picture showed (scenes taken from a concept picture use
+this; see :mod:`assetgen.scene.decompose`). Scale multiplies the object's height.
 """
 from __future__ import annotations
 
@@ -134,7 +136,10 @@ def _yaw(value, where: str):
         target = value["face"]
         if isinstance(target, str) or (isinstance(target, list) and len(target) == 2):
             return {"face": target}
-    raise SpecError(f'{where}: yaw is degrees, "random" or {{"face": <object id or [x, z]>}}, not {value!r}')
+    if isinstance(value, dict) and set(value) == {"seen_from"} and isinstance(value["seen_from"], (int, float)):
+        return {"seen_from": float(value["seen_from"])}
+    raise SpecError(f'{where}: yaw is degrees, "random", {{"face": <object id or [x, z]>}} or '
+                    f'{{"seen_from": <degrees>}}, not {value!r}')
 
 
 def _number(data: dict, key: str, where: str, default=None, positive: bool = False):
@@ -274,7 +279,7 @@ def parse(data: dict, base: Path | None = None) -> SceneSpec:
                    flatten=_number(ground, "flatten", "ground", 1.5))
     for o in parsed:
         for k, p in enumerate(o.place):
-            if isinstance(p.yaw, dict) and isinstance(p.yaw["face"], str) and p.yaw["face"] not in ids:
+            if isinstance(p.yaw, dict) and isinstance(p.yaw.get("face"), str) and p.yaw["face"] not in ids:
                 raise SpecError(f"object {o.id!r} place[{k}]: faces {p.yaw['face']!r}, which is not an object id")
     harmonize = _number(data, "harmonize", "scene", 0.5)
     if not 0 <= harmonize <= 1:
