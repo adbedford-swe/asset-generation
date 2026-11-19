@@ -115,7 +115,8 @@ def plan(description: str, base_url: str, model: str = "local", size: float | No
         try:
             data = extract_json(answer)
             parse(data)
-            log(f"[plan] {len(data['objects'])} kinds of object: {', '.join(o['id'] for o in data['objects'])}")
+            log(f"[plan] {len(data['objects'])} kind{'' if len(data['objects']) == 1 else 's'} of object: "
+                f"{', '.join(o['id'] for o in data['objects'])}")
             return data
         except SpecError as e:
             log(f"[plan] attempt {attempt}: {e}")

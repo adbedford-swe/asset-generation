@@ -68,8 +68,9 @@ the speeds the clips were generated at, and there's a prefab you can drag into a
 - **Props and set pieces too.** `--kind prop` makes one static object (a barrel, a tree, a lamp post), `--kind diorama`
   a whole set piece as one model. Both stop after the mesh and come with a collider and a footprint; see
   [Props and dioramas](#props-and-dioramas).
-- **Whole scenes.** A spec of what is where (or a sentence, for a language model to plan) becomes generated objects in
-  a shared style on generated ground, laid out without overlaps, in one instanced glTF; see [Scenes](#scenes).
+- **Whole scenes.** A spec of what is where (or a sentence for a language model to plan, or a concept picture to take
+  apart) becomes generated objects in a shared style on generated ground, laid out without overlaps, in one instanced
+  glTF; see [Scenes](#scenes).
 - **A server** with a web UI and an HTTP API on one port, so you, a script or an LLM agent can drive all of it.
 
 ## Quick start
@@ -249,10 +250,50 @@ Engines import the scene as one model. Godot gives the ground a trimesh body and
 collider; Unity builds a static prefab with the same colliders. The objects under `assets/` import as ordinary props
 too.
 
-**Which tool for which job.** A *diorama* (`--kind diorama`) is the quickest way to get a static set piece that nothing
-needs to move or come apart: one picture, one model. A *scene* is for anything bigger or more alive: the objects are
-separate, so they can be colliders, be moved, be reused in another scene, and be instanced cheaply. The two mix: a
-diorama can be one object in a scene (`"kind": "diorama"`).
+### From a picture of the whole scene
+
+Props drawn one by one share a style prompt but not a picture. A concept picture of the whole scene, whether drawn,
+generated or photographed, already has one look and one arrangement. `assetgen scene decompose` takes it apart into a
+spec:
+
+```bash
+uv run assetgen scene decompose farm.png --objects "red barn, haystack, wooden cart" --known "red barn=6" --out farm.json
+uv run assetgen scene decompose --text "a small farmyard with a red barn, haystacks and a cart" \
+    --objects "red barn, haystack, wooden cart" --out farm.json          # draw the picture first
+uv run assetgen scene build farm.json
+```
+
+1. **Find.** Grounding DINO finds every object named (open vocabulary), and SAM cuts each out from its box.
+2. **Measure.** Depth Anything V2 (metric; `--setting indoor` for rooms) gives depth, and the picture is lifted into 3D
+   with `--fov` (default 55 degrees). The ground plane is fitted to everything that is not an object (RANSAC).
+3. **Place.** Each object is stood on that plane where its base meets it, with its height read off the plane.
+   `--known` corrects the depth's scale from objects whose size you know.
+4. **Turn.** An object's turn is recorded as the direction the picture saw it from (`{"seen_from": degrees}`). Once
+   the object is made, the mesh stage knows where Idol's camera stood relative to the object's front, and layout turns
+   it so the scene's camera sees the side the picture showed. This was checked end to end with the real mesh stage:
+   a fox placed at a known turn came back matching its true shape to within 2 to 4% of its height, including when the
+   picture showed its back.
+5. **Ground.** The picture's own ground is seen from straight above: resampled onto the scene's ground plane, objects
+   taken out and filled from around them. The paths and patches lie where the picture has them, under the objects
+   that stood on them.
+
+Objects with the same label share one prop, made from the clearest cut-out: the largest, least hidden by others or the
+picture's edge. `--each` makes every one its own. Cut-outs go straight to Idol with their transparency. `--redraw 0.4`
+redraws each one in the scene's style first, which completes parts that other objects hid. `<out>_found.png` shows
+what was found, every object's base and height, and a 1 m grid on the ground plane, so you can check the
+reading before spending GPU time on the objects. The models (about 1.2 GB, Apache-2.0) download on first use.
+
+**Which approach for which job:**
+
+- A *diorama* (`--kind diorama`) is the quickest way to a static set piece that nothing needs to move or come apart:
+  one picture, one model.
+- A *scene* is for anything bigger or more alive. The objects are separate, so they can have colliders, be moved, be
+  reused in another scene and be instanced cheaply.
+- *Decomposing a concept picture* gives a scene the picture's coherence and arrangement. Planning or writing a spec
+  gives you control over every object.
+
+These mix: a diorama can be one object in a scene (`"kind": "diorama"`), and a decomposed spec is an ordinary spec,
+to edit, add scatter to, or rebuild.
 
 ## The server
 
@@ -286,6 +327,7 @@ curl -o owl-unity.zip localhost:7860/api/v1/jobs/<id>/export/unity
 | `GET /api/v1/info` | Version, devices, image backend health, default motions |
 | `POST /api/v1/scenes` | A scene from a `spec`, or a `prompt` for the language model to plan; `from` reuses an earlier scene's objects |
 | `POST /api/v1/scenes/plan`, `GET /api/v1/scenes/example` | A spec from a description; an example spec |
+| `POST /api/v1/scenes/decompose` | A spec from a picture of the whole scene (`image`, `upload` or a `prompt` to draw it) and the `objects` to look for; its files are `draft:<id>/...`, which `POST /scenes` takes |
 
 `/docs` has the full reference. Planning scenes from a description needs a language model: start the server with
 `--llm-base-url` (any OpenAI-compatible endpoint; or `ASSETGEN_LLM_URL`, `ASSETGEN_LLM_MODEL`), or send `llm` with the

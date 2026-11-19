@@ -22,7 +22,8 @@
         "prompt": {"type": "string", "description": "The surface, drawn as a tileable texture."},
         "texture": {"type": "string", "description": "Or a picture of the surface."},
         "color": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
-        "tile": {"type": "number", "exclusiveMinimum": 0},
+        "tile": {"type": "number", "exclusiveMinimum": 0,
+                 "description": "Metres per repeat of the texture; at least the ground's size: one picture covering it."},
         "relief": {"type": "number", "minimum": 0, "description": "Height of hills, metres."},
         "feature": {"type": "number", "exclusiveMinimum": 0, "description": "Size of hills, metres."},
         "resolution": {"type": "number", "exclusiveMinimum": 0},
@@ -59,7 +60,10 @@
     "vec2": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
     "yaw": {"oneOf": [{"type": "number"}, {"const": "random"},
                       {"type": "object", "required": ["face"], "additionalProperties": false,
-                       "properties": {"face": {"oneOf": [{"type": "string"}, {"$ref": "#/$defs/vec2"}]}}}]},
+                       "properties": {"face": {"oneOf": [{"type": "string"}, {"$ref": "#/$defs/vec2"}]}}},
+                      {"type": "object", "required": ["seen_from"], "additionalProperties": false,
+                       "description": "Turn the object so a viewer in this direction (degrees) sees the side its picture showed.",
+                       "properties": {"seen_from": {"type": "number"}}}]},
     "placement": {
       "oneOf": [
         {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 3},

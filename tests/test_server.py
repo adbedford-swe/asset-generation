@@ -263,3 +263,33 @@ def test_scene_jobs(api, fake_scene):
     manager.jobs.clear()  # as after a restart: scenes are found again from their folders
     listed = {j["id"]: j for j in client.get("/api/v1/jobs").json()["jobs"]}
     assert listed[job["id"]]["kind"] == "scene" and listed[job["id"]]["status"] == "done"
+
+
+def test_decompose_returns_a_spec_the_server_can_build(api, fake_scene, monkeypatch):
+    import assetgen.scene.decompose as dec
+
+    def decompose(image, names, out, name=None, style="", *args, **kwargs):
+        (out.parent / f"{out.stem}_parts").mkdir(parents=True)
+        Image.new("RGBA", (8, 8)).save(out.parent / f"{out.stem}_parts" / "barn.png")
+        Image.new("RGB", (8, 8)).save(out.parent / f"{out.stem}_found.png")
+        spec = {"name": name, "style": style, "ground": {"size": [10, 10]},
+                "objects": [{"id": "barn", "image": f"{out.stem}_parts/barn.png", "height": 6,
+                             "place": [{"position": [0, 0], "yaw": {"seen_from": 12.0}}]}]}
+        out.write_text(json.dumps(spec))
+        return spec
+
+    monkeypatch.setattr(dec, "decompose", decompose)
+    client, manager = api
+    r = client.post("/api/v1/scenes/decompose", json={"image": png_data_url(), "objects": ["red barn"],
+                                                      "name": "farm", "known": {"red barn": 6}})
+    assert r.status_code == 200, r.text
+    found = r.json()
+    image = found["spec"]["objects"][0]["image"]
+    assert image == f"draft:{found['id']}/farm_parts/barn.png"
+    assert client.get(found["found"]).status_code == 200 and client.get(found["parts"][0]).status_code == 200
+    assert client.get(f"/api/v1/drafts/{found['id']}/../../secret").status_code == 404
+    job = client.post("/api/v1/scenes", json={"spec": found["spec"]}).json()
+    assert wait_for(manager.get(job["id"])) == "done"
+    built = fake_scene[-1][0]
+    assert built.objects[0].image == str(manager.root / "_drafts" / found["id"] / "farm_parts" / "barn.png")
+    assert client.post("/api/v1/scenes/decompose", json={"objects": []}).status_code == 422

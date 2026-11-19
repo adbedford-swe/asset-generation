@@ -125,7 +125,8 @@ def ground_mesh(field: Heightfield, tile: float):
     gz, gx = np.gradient(field.heights, zs, xs)
     normals = np.stack([-gx, np.ones_like(gx), -gz], axis=-1).reshape(-1, 3)
     normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    uvs = np.stack([X / tile, Z / tile], axis=-1).reshape(-1, 2)
+    # Offset half a tile, so a texture as large as the ground (tile = size) covers it exactly once.
+    uvs = np.stack([X / tile + 0.5, Z / tile + 0.5], axis=-1).reshape(-1, 2)
     return vertices.astype(np.float32), faces.astype(np.uint32), normals.astype(np.float32), uvs.astype(np.float32)
 
 
