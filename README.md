@@ -368,7 +368,7 @@ character file is written.
 
 ## Status
 
-Experimental, and honest about it:
+Experimental:
 
 - End to end on Linux + ROCm (2x RX 7900 XTX) and on a 4 GB Windows laptop GPU (CUDA), apart from Idol on the laptop.
 - The server, API, web UI and exporters run on real pipeline output. The Unity package has run in Unity 6.3 driven
@@ -392,7 +392,7 @@ addon on a real Godot.
 ## Licences
 
 Idol is Apache-2.0 and SkinTokens is MIT. UniMate's code is MIT, but its released checkpoints are CC BY-NC 4.0, so
-characters animated with them are for non-commercial use; every character file says so.
+characters animated with them are for non-commercial use.
 
 The fox in `docs/` began as the Khronos glTF sample Fox (low-poly fox by PixelMannen, CC0): `assetgen synth` turned
 it into a splat and a picture, and its mesh, rig and clips above were generated from those.
