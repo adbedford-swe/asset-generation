@@ -1,5 +1,8 @@
 """The assetgen server: an HTTP API and the web UI, sharing one job queue.
 
+A job makes one asset: a character (rigged and animated), a prop or a diorama
+(static, finalized straight after the mesh).
+
     python server.py                          # http://127.0.0.1:7860 (UI), /api/v1 (API), /docs (API reference)
     assetgen serve --host 0.0.0.0 --devices cuda:0,cuda:1 --image-backend sdcpp --image-url http://127.0.0.1:1234
 
@@ -33,7 +36,8 @@ from pydantic import BaseModel, Field
 from . import character as character_file
 from .animate import DEFAULT_PROMPTS
 from .imagegen import BACKENDS, ImageSpec
-from .pipeline import STAGES, Cancelled, Options, branch, completed_stages, run_inputs
+from .pipeline import (KINDS, STAGES, STATIC_KINDS, Cancelled, Options, branch, completed_stages, kind_stages,
+                       run_inputs)
 from .pipeline import run as run_pipeline
 from .thirdparty import ROOT
 
@@ -97,6 +101,8 @@ class Settings:
     llm_base_url: str | None = None
     idol_steps: int = 50
     flow_steps: int = 32
+    kind: str = "character"
+    collider: str = "auto"
 
     @classmethod
     def parse(cls, data: dict | None) -> "Settings":
@@ -107,6 +113,8 @@ class Settings:
             raise ValueError(f"unknown settings: {', '.join(unknown)}")
         if "loop" in known:
             known["loop"] = str(known["loop"])
+        if known.get("kind", "character") not in KINDS:
+            raise ValueError(f"unknown kind {known['kind']!r}; one of {', '.join(KINDS)}")
         return cls(**known)
 
     def options(self, out: Path, device: str, **inputs) -> Options:
@@ -117,7 +125,7 @@ class Settings:
                                   "--resolution", str(int(self.voxels))],
                        llm_base_url=self.llm_base_url or None, cfg_scale=self.cfg_scale, loop=self.loop,
                        root_motion=bool(self.root_motion), idol_steps=int(self.idol_steps),
-                       flow_steps=int(self.flow_steps), **inputs)
+                       flow_steps=int(self.flow_steps), kind=self.kind, collider=self.collider, **inputs)
 
 
 class Job:
@@ -133,6 +141,7 @@ class Job:
         self.settings = settings
         self.source = source
         self.status = status
+        self.kind = options.kind if options is not None else (settings.kind if settings else "character")
         self.stage: str | None = None
         self.stages: dict[str, str] = {}
         self.error: str | None = None
@@ -153,6 +162,7 @@ class Job:
             inputs = {}
         name = inputs.get("name") or folder.name
         job = cls(folder, name, status="done")
+        job.kind = inputs.get("kind") or "character"
         done = completed_stages(folder)
         job.stages = {s: "done" for s in done}
         finished = (folder / f"{name}.glb").exists() and "finalize" in done
@@ -198,7 +208,7 @@ class Job:
         if self.options is None:
             return [s for s in STAGES if s in self.stages]
         inputs = self.options
-        planned = [s for s in STAGES if not (s == "image" and not (inputs.text and not inputs.image))
+        planned = [s for s in kind_stages(inputs.kind) if not (s == "image" and not (inputs.text and not inputs.image))
                    and not (s == "generate" and inputs.ply)]
         if self.start:
             planned = planned[planned.index(self.start):] if self.start in planned else planned
@@ -215,11 +225,12 @@ class Job:
         return round((finished + running) / len(planned), 3)
 
     def character(self) -> dict | None:
-        """The character file, written now for a run finalized before character files existed."""
+        """The asset file (a character's or a prop's), written now for a character run finalized before
+        character files existed."""
         path = self.folder / f"{self.name}{character_file.EXTENSION}"
         glb = self.folder / f"{self.name}.glb"
         try:
-            if not path.exists() and glb.exists() and self.status == "done":
+            if not path.exists() and glb.exists() and self.status == "done" and self.kind == "character":
                 character_file.write(glb)
             return json.loads(path.read_text()) if path.exists() else None
         except Exception:
@@ -255,7 +266,7 @@ class Job:
             if (self.folder / rel).exists():
                 files[key] = f"{url}/files/{rel}"
         data = {
-            "id": self.id, "name": self.name, "status": self.status, "stage": self.stage,
+            "id": self.id, "name": self.name, "kind": self.kind, "status": self.status, "stage": self.stage,
             "progress": self.progress(), "created": self.created, "started": self.started,
             "finished": self.finished, "error": self.error, "input": self.input_summary(),
             "urls": {"self": url, "events": f"{url}/events", "log": f"{url}/log", "cancel": f"{url}/cancel",
@@ -408,19 +419,20 @@ class JobManager:
             if prompt:
                 inputs["text"] = prompt
         else:
-            inputs.update(text=prompt, image_spec=image_spec or self.image_spec)
+            inputs.update(text=prompt, image_spec=replace(image_spec or self.image_spec, kind=settings.kind))
         o = settings.options(folder, settings.device, **inputs)
         job = Job(folder, name, o, None, settings, source=None)
         return self._enqueue(job)
 
     def continue_job(self, source_id: str, start: str, settings: Settings | None = None) -> Job:
         """A new job that keeps ``source_id``'s results before ``start`` and runs the rest."""
-        if start not in STAGES or start in ("image", "generate"):
-            raise ValueError(f"continue from one of mesh, rig, animate, finalize (not {start!r})")
         source = self.get(source_id)
+        allowed = [s for s in kind_stages(source.kind) if s not in ("image", "generate")]
+        if start not in allowed:
+            raise ValueError(f"continue a {source.kind} from one of {', '.join(allowed)} (not {start!r})")
         if source.active:
             raise ValueError(f"{source_id} is still {source.status}")
-        settings = settings or source.settings or Settings()
+        settings = replace(settings or source.settings or Settings(), kind=source.kind)
         folder = self.root / f"{time.strftime('%Y%m%d-%H%M%S')}-{slug(source.name)}-from-{start}"
         branch(source.folder, start, folder)
         inputs = run_inputs(source.folder)
@@ -527,17 +539,19 @@ class Draft(BaseModel):
 
 
 class JobRequest(BaseModel):
-    prompt: str | None = Field(None, description="Describe the character; an image is generated first "
+    prompt: str | None = Field(None, description="Describe the asset; an image is generated first "
                                                  "unless image, upload or draft is given.",
                                examples=["a goblin shaman with a lantern and a hooded cloak"])
+    kind: str | None = Field(None, description="character (default: rigged and animated), prop (one static "
+                                               "object) or diorama (a static set piece)")
     image: str | None = Field(None, description="An image of the character, as a data URL or base64.")
     upload: str | None = Field(None, description="An id from POST /uploads (an image or a .ply splat).")
     reference: str | None = Field(None, description="With a .ply upload: an upload id of Idol's input image.")
     draft: Draft | None = Field(None, description="A candidate from POST /images.")
     name: str | None = None
-    motions: list[str] | None = Field(None, description='One per clip: "An object <does one thing>." '
-                                                         'Clips loop unless the prompt ends in "[once]".')
-    height: float | None = Field(None, description="Final height in metres (default 1.8).")
+    motions: list[str] | None = Field(None, description='Characters, one per clip: "An object <does one '
+                                                         'thing>." Clips loop unless the prompt ends in "[once]".')
+    height: float | None = Field(None, description="Final height in metres (default 1.8; props and dioramas 1.0).")
     settings: dict | None = Field(None, description="Any of: " + ", ".join(Settings.__dataclass_fields__))
     image_backend: ImageBackend | None = None
 
@@ -551,6 +565,7 @@ class ContinueRequest(BaseModel):
 
 class ImagesRequest(BaseModel):
     prompt: str
+    kind: str = Field("character", description="how to frame the prompt: character, prop or diorama")
     count: int = Field(4, ge=1, le=8)
     seed: int | None = None
     image_backend: ImageBackend | None = None
@@ -574,15 +589,17 @@ def create_api(manager: JobManager, token: str | None = None):
 
     router = APIRouter(prefix="/api/v1", dependencies=[Depends(check_token)])
 
-    def settings_of(motions, height, settings) -> Settings:
+    def settings_of(motions, height, settings, kind=None) -> Settings:
         try:
-            s = Settings.parse(settings)
+            s = Settings.parse({**(settings or {}), **({"kind": kind} if kind else {})})
         except (TypeError, ValueError) as e:
             raise HTTPException(422, str(e))
         if motions:
             s.motions = [m.strip() for m in motions if m.strip()]
         if height is not None:
             s.height = height
+        elif s.kind in STATIC_KINDS and "height" not in (settings or {}):
+            s.height = 1.0
         return s
 
     def spec_of(backend: ImageBackend | None) -> ImageSpec:
@@ -605,7 +622,8 @@ def create_api(manager: JobManager, token: str | None = None):
         from .imagegen import probe
 
         return {"name": "assetgen", "version": version(), "pid": os.getpid(), "devices": manager.devices,
-                "stages": STAGES, "engines": ["unity", "godot", "gltf"], "default_motions": DEFAULT_PROMPTS,
+                "stages": STAGES, "kinds": list(KINDS), "engines": ["unity", "godot", "gltf"],
+                "default_motions": DEFAULT_PROMPTS,
                 "image_backend": {**manager.image_spec.public(), "url": manager.image_spec.base_url,
                                   **probe(manager.image_spec)},
                 "image_backends": sorted(BACKENDS), "settings": Settings().__dict__,
@@ -631,8 +649,11 @@ def create_api(manager: JobManager, token: str | None = None):
 
     @router.post("/images", summary="Generate candidate images for a prompt, to pick one for POST /jobs")
     def images(req: ImagesRequest):
+        if req.kind not in KINDS:
+            raise HTTPException(422, f"unknown kind {req.kind!r}; one of {', '.join(KINDS)}")
         try:
-            return manager.draft_images(req.prompt, req.count, req.seed, spec_of(req.image_backend))
+            return manager.draft_images(req.prompt, req.count, req.seed,
+                                        replace(spec_of(req.image_backend), kind=req.kind))
         except Exception as e:
             raise HTTPException(502, f"image backend failed: {e}")
 
@@ -643,9 +664,9 @@ def create_api(manager: JobManager, token: str | None = None):
         except KeyError:
             raise HTTPException(404, "no such image")
 
-    @router.post("/jobs", status_code=202, summary="Make a character: prompt, image, upload or draft -> job")
+    @router.post("/jobs", status_code=202, summary="Make an asset: prompt, image, upload or draft -> job")
     def create_job(req: JobRequest):
-        s = settings_of(req.motions, req.height, req.settings)
+        s = settings_of(req.motions, req.height, req.settings, req.kind)
         image = ply = reference = None
         try:
             if req.image:
@@ -718,8 +739,15 @@ def create_api(manager: JobManager, token: str | None = None):
                  summary="Re-run from a stage (new motions, a new rig, ...) in a new job; the original is kept")
     def continue_job(job_id: str, req: ContinueRequest):
         job = job_or_404(job_id)
-        s = settings_of(req.motions, req.height, req.settings) if (req.motions or req.height or req.settings) \
-            else (job.settings or Settings())
+        if req.motions or req.height or req.settings:
+            s = settings_of(req.motions, req.height, req.settings, job.kind)
+        elif job.settings is not None:
+            s = job.settings
+        else:  # a run from before this server started: keep a static asset's size
+            s = settings_of(None, None, None, job.kind)
+            made = job.character() if job.kind in STATIC_KINDS else None
+            if made:
+                s.height = made["model"]["height"]
         try:
             return manager.continue_job(job_id, req.start, s).to_dict()
         except (ValueError, SystemExit) as e:

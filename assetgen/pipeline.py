@@ -4,11 +4,16 @@
       0_image/    image.png, image.json                      (image: text to picture)
       0_splat/    splat.ply, input.png, camera.json          (generate)
       1_mesh/     mesh.glb, canonical.ply, front.png, compare.png, report.json
-      2_rig/      rigged.glb, rigged.json
-      3_motion/   asset/, samples/, animated/, clips.json
-      <name>.glb  the rigged, textured asset with every clip  (finalize)
-      <name>.assetgen  the character file engines read      (finalize)
+      2_rig/      rigged.glb, rigged.json                    (characters)
+      3_motion/   asset/, samples/, animated/, clips.json    (characters)
+      <name>.glb  the finished asset                         (finalize)
+      <name>.assetgen  what engines read about it            (finalize)
       manifest.json, logs/<stage>.log
+
+The kind of asset decides the stages. A character is rigged and animated; a prop
+(a barrel, a tree, a rock) and a diorama (a whole set piece as one static model)
+go from the mesh straight to finalize, which scales and grounds them and works out
+their collider and footprint (:mod:`assetgen.prop`).
 
 A stage is skipped when its outputs exist and it last ran with the same
 arguments; once a stage runs, every later stage runs too.
@@ -29,6 +34,8 @@ from pathlib import Path
 from .imagegen import ImageSpec
 
 STAGES = ["image", "generate", "mesh", "rig", "animate", "finalize"]
+KINDS = ("character", "prop", "diorama")
+STATIC_KINDS = ("prop", "diorama")
 ANSI = re.compile(r"\[[0-9;]*[A-Za-z]")  # colour codes some stages print
 
 
@@ -60,9 +67,13 @@ class Options:
     flow_steps: int | None = None
     idol_steps: int | None = None
     fbx: bool = False
+    kind: str = "character"
+    collider: str = "auto"         # props: convex, box, mesh or none (auto: convex; mesh for dioramas)
 
 
 def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
+    if o.kind not in KINDS:
+        raise ValueError(f"unknown kind {o.kind!r}; one of {', '.join(KINDS)}")
     out = o.out.resolve()
     splat = out / "0_splat"
     image = o.image.resolve() if o.image else None
@@ -72,6 +83,8 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
         image = out / "0_image" / "image.png"
         args = ["assetgen.imagegen", "--prompt", o.text, "--out", out / "0_image", "--seed", o.seed,
                 "--backend", spec.backend, "--width", spec.width, "--height", spec.height]
+        if o.kind != "character":
+            args += ["--kind", o.kind]
         for flag, value in (("--url", spec.url), ("--model", spec.model), ("--steps", spec.steps),
                             ("--cfg_scale", spec.cfg_scale), ("--sampler", spec.sampler),
                             ("--workflow", spec.workflow), ("--command", spec.command)):
@@ -93,6 +106,13 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
     if reference:
         mesh += ["--reference", reference]
     cmds["mesh"] = (mesh, [out / "1_mesh" / "mesh.glb"])
+    if o.kind in STATIC_KINDS:
+        fin = ["assetgen.prop", "--mesh", out / "1_mesh" / "mesh.glb", "--out", out / f"{o.name}.glb",
+               "--kind", o.kind, "--collider", o.collider]
+        if o.height is not None:
+            fin += ["--height", o.height]
+        cmds["finalize"] = (fin, [out / f"{o.name}.glb", out / f"{o.name}.assetgen"])
+        return {k: ([str(a) for a in v[0]], v[1]) for k, v in cmds.items()}
     rig = ["assetgen.rig", "--mesh", out / "1_mesh" / "mesh.glb", "--out", out / "2_rig" / "rigged.glb",
            "--device", o.device, "--seed", o.seed, "--num_beams", o.num_beams, "--candidates", o.rig_candidates]
     if o.rig_class:
@@ -169,7 +189,8 @@ def run(o: Options, start: str | None = None, stop: str | None = None, force: bo
     (out / "run.json").write_text(json.dumps({
         "text": o.text, "image_spec": o.image_spec.public() if o.image_spec else None,
         "image": str(o.image) if o.image else None, "ply": str(o.ply) if o.ply else None,
-        "reference": str(o.reference) if o.reference else None, "name": o.name, "mode": o.mode}, indent=2))
+        "reference": str(o.reference) if o.reference else None, "name": o.name, "mode": o.mode,
+        "kind": o.kind}, indent=2))
     cmds = stage_commands(o)
     order = [s for s in STAGES if s in cmds]
     if start:
@@ -243,7 +264,13 @@ def run_inputs(folder: Path) -> dict:
 
     return {"image": arg("generate", "--image"), "ply": None if "generate" in stages else arg("mesh", "--ply"),
             "reference": None if "generate" in stages else arg("mesh", "--reference"),
-            "name": arg("animate", "--name") or folder.name, "mode": arg("generate", "--mode") or "synthetic"}
+            "name": arg("animate", "--name") or folder.name, "mode": arg("generate", "--mode") or "synthetic",
+            "kind": arg("finalize", "--kind") or "character"}
+
+
+def kind_stages(kind: str) -> list[str]:
+    """The stages an asset of ``kind`` goes through (before image and generate are dropped for its input)."""
+    return [s for s in STAGES if not (kind in STATIC_KINDS and s in ("rig", "animate"))]
 
 
 def completed_stages(folder: Path) -> list[str]:
@@ -262,7 +289,10 @@ def branch(source: Path, start: str, target: Path) -> Path:
 
     source, target = Path(source), Path(target)
     done = completed_stages(source)
-    needed = [s for s in STAGES[:STAGES.index(start)] if s not in ("image", "generate") or s in done]
+    stages = kind_stages(run_inputs(source).get("kind") or "character")
+    if start not in stages:
+        raise SystemExit(f"{source.name} has no {start} stage; continue from one of {', '.join(stages[2:])}")
+    needed = [s for s in stages[:stages.index(start)] if s not in ("image", "generate") or s in done]
     missing = [s for s in needed if s not in done]
     if missing:
         raise SystemExit(f"{source.name} has not finished {', '.join(missing)}; start from {missing[0]} instead")

@@ -13,6 +13,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#text-to-image-bring-your-own-generator">Text to image</a> ·
+  <a href="#props-and-dioramas">Props</a> ·
   <a href="#the-server">Server &amp; API</a> ·
   <a href="#unity">Unity</a> ·
   <a href="#godot">Godot</a> ·
@@ -63,6 +64,9 @@ the speeds the clips were generated at, and there's a prefab you can drag into a
 - **Unity:** a package that turns that into an Animator Controller with a speed-driven locomotion blend tree and a
   prefab, a generator window in the Editor, and `unity command assetgen ...` for the new Unity CLI and its MCP mode.
 - **Godot:** an addon that imports the same character ready to play, with an AnimationTree.
+- **Props and set pieces too.** `--kind prop` makes one static object (a barrel, a tree, a lamp post), `--kind diorama`
+  a whole set piece as one model. Both stop after the mesh and come with a collider and a footprint; see
+  [Props and dioramas](#props-and-dioramas).
 - **A server** with a web UI and an HTTP API on one port, so you, a script or an LLM agent can drive all of it.
 
 ## Quick start
@@ -95,9 +99,10 @@ uv run assetgen export outputs/goblin --engine unity --project ~/MyGame
 
 ## Text to image: bring your own generator
 
-The 3D stages want one picture of one character, whole, on a plain background. assetgen frames your description that
-way (`"<your text>, full body character, standing in a relaxed A-pose, ... plain white background"`; `--raw-prompt`
-turns it off) and asks whichever backend you point it at:
+The 3D stages want one picture of one thing, whole, on a plain background. assetgen frames your description that
+way for the kind of asset (`"<your text>, full body character, standing in a relaxed A-pose, ... plain white
+background"` for a character, `"<your text>, a single game prop, ..."` for a prop; `--raw-prompt` turns it off) and
+asks whichever backend you point it at:
 
 | Backend | Talks to | Default address |
 |---|---|---|
@@ -127,6 +132,52 @@ from that list (`sdxl-checkpoint:checkpoints/my-model.safetensors`), a recipe (`
 given to sd-server with `-m` can't be loaded back through its API, so that one stays loaded. `--image-keep-loaded`
 (or `ASSETGEN_IMAGE_KEEP_LOADED=1`) leaves the model loaded.
 
+**Redrawing a picture.** Every backend can also start from a picture (image to image): a rough crop, a sketch, or an
+earlier result to restyle. `--strength` runs from 0 (keep it) to 1 (ignore it), and an optional mask (white where it
+may change) limits where it changes. The picture is fitted onto the canvas, and transparent parts become the
+background:
+
+```bash
+uv run assetgen image --kind prop --prompt "a mossy wooden barrel" --init barrel.png --strength 0.5 --out drafts/barrel
+```
+
+`sdcpp` and `a1111` use `/sdapi/v1/img2img`, `openai` uses `/v1/images/edits`, `comfyui` needs a workflow with
+`{{image}}` and `{{denoise}}` (`--comfy-edit-workflow`), and `command` needs a template with `{init}` and `{strength}`
+(`--image-edit-command`).
+
+## Props and dioramas
+
+Not everything in a game moves. `--kind prop` makes one static object and `--kind diorama` a whole set piece (a ruined
+watchtower on its rock, a market stall with its awning and crates) as one model. Both use the same image, splat and
+mesh stages as a character, with framing for their kind, and then skip the rig and motion stages:
+
+```bash
+uv run assetgen run --kind prop --text "a wooden barrel with iron bands" --height 1.0 --out outputs/barrel
+uv run assetgen run --kind prop --image lamp_post.png --height 3.2 --out outputs/lamp_post
+uv run assetgen run --kind diorama --text "a ruined stone watchtower on a rocky outcrop" --height 6 --out outputs/tower
+uv run assetgen batch --kind prop --texts props.txt --out outputs/props        # an asset library, one prop per line
+```
+
+Finalize scales the mesh to `--height` (1 m if not given) and puts its pivot at the centre of its base, on y = 0, so it
+stands where you place it. It writes `<name>.glb`, a four-sided preview `<name>.png`, and the prop file
+`<name>.assetgen` ([schema](schema/prop.schema.json)):
+
+```jsonc
+{
+  "format": "assetgen.prop", "version": 1, "name": "pine", "kind": "prop",
+  "model": {"file": "pine.glb", "units": "meters", "up": "+Y", "forward": "+Z", "pivot": "base",
+            "height": 8.0, "size": [4.0, 8.0, 3.2], "...": "..."},
+  "collider": {"type": "convex", "box": {"center": [0, 4, 0], "size": [4.0, 8.0, 3.2]}},
+  "footprint": {"outline": [[-2.0, -1.6], "..."], "radius": 2.56, "base_radius": 0.28}
+}
+```
+
+The collider is a convex hull for props and the mesh itself for dioramas, which you walk on (`--collider` picks
+`convex`, `mesh`, `box` or `none`). Engines build it on import: Unity gives the prefab a MeshCollider or BoxCollider,
+and Godot gives the scene a StaticBody3D with the matching shape. The footprint is the asset seen from above: its
+outline, how far it reaches from its pivot, and how far its base does (a tree's trunk, not its canopy). Layouts use it to
+space assets so they don't overlap.
+
 ## The server
 
 `python server.py` (same as `assetgen serve`) runs the web UI and the API on one port and one job queue: a job
@@ -148,13 +199,13 @@ curl -o owl-unity.zip localhost:7860/api/v1/jobs/<id>/export/unity
 
 | Endpoint | |
 |---|---|
-| `POST /api/v1/jobs` | A character from `prompt`, `image` (base64), `upload`, or `draft` (a candidate picked from `/images`) |
+| `POST /api/v1/jobs` | An asset from `prompt`, `image` (base64), `upload`, or `draft` (a candidate picked from `/images`); `kind`: `character` (default), `prop` or `diorama` |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Status, stage, progress, preview URLs; the character file once done |
 | `GET /api/v1/jobs/{id}/events` | Server-sent events: log lines and status until the job ends |
 | `POST /api/v1/jobs/{id}/continue` | Redo from `mesh`, `rig`, `animate` or `finalize` (new motions on the same rig, say) in a new job |
 | `POST /api/v1/jobs/{id}/cancel` | Stops the stage and everything it started |
 | `GET /api/v1/jobs/{id}/export/{unity,godot,gltf}` | A zip ready for the engine |
-| `POST /api/v1/images` | Candidate pictures for a prompt, to choose from |
+| `POST /api/v1/images` | Candidate pictures for a prompt (framed for its `kind`), to choose from |
 | `POST /api/v1/uploads` | An image or a `.ply` splat, for `POST /jobs` |
 | `GET /api/v1/info` | Version, devices, image backend health, default motions |
 

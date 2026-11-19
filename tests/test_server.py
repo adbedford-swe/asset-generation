@@ -28,7 +28,7 @@ def fake_pipeline(monkeypatch, finished):  # noqa: F811
 
     def run(o, start=None, stop=None, force=False, log=print, cancel=None, on_stage=None):
         calls.append(o)
-        (o.out / "run.json").write_text(json.dumps({"text": o.text, "name": o.name}))
+        (o.out / "run.json").write_text(json.dumps({"text": o.text, "name": o.name, "kind": o.kind}))
         for stage in server.Job(o.out, o.name, o, start).planned_stages():
             on_stage(stage, "running")
             log(f"working on {stage}")
@@ -177,3 +177,25 @@ def test_step_settings_reach_the_stages(api, fake_pipeline):
     assert cmds["generate"][0][-2:] == ["--steps", "24"]
     assert cmds["animate"][0][cmds["animate"][0].index("--flow_steps") + 1] == "16"
     assert client.get("/api/v1/info").json()["settings"]["idol_steps"] == 50
+
+
+def test_prop_jobs_stop_after_the_mesh(api, fake_pipeline):
+    client, manager = api
+    job = client.post("/api/v1/jobs", json={"prompt": "a wooden barrel", "kind": "prop"}).json()
+    assert job["kind"] == "prop"
+    assert list(job["stages"]) == ["image", "generate", "mesh", "finalize"]
+    assert wait_for(manager.get(job["id"])) == "done"
+    o = fake_pipeline[-1]
+    assert o.kind == "prop" and o.height == 1.0 and o.image_spec.kind == "prop"
+    sized = client.post("/api/v1/jobs", json={"prompt": "a pine", "kind": "prop", "height": 9}).json()
+    assert wait_for(manager.get(sized["id"])) == "done" and fake_pipeline[-1].height == 9
+    assert client.post("/api/v1/jobs", json={"prompt": "x", "kind": "vehicle"}).status_code == 422
+    folder = manager.root / job["id"]
+    (folder / "1_mesh").mkdir()
+    (folder / "manifest.json").write_text(json.dumps(
+        {"stages": {s: {"args": [], "ok": True} for s in ("mesh", "finalize")}}))
+    r = client.post(f"/api/v1/jobs/{job['id']}/continue", json={"from": "rig"})
+    assert r.status_code == 422 and "mesh, finalize" in r.json()["detail"]
+    again = client.post(f"/api/v1/jobs/{job['id']}/continue", json={"from": "finalize"}).json()
+    assert again["kind"] == "prop" and list(again["stages"]) == ["finalize"]
+    assert wait_for(manager.get(again["id"])) == "done" and fake_pipeline[-1].kind == "prop"

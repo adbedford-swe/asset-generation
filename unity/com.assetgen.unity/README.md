@@ -1,10 +1,11 @@
-# Assetgen Characters for Unity
+# Assetgen for Unity
 
-Describe a character, or hand over a picture, and get back a prefab that walks, runs and attacks.
+Describe a character, or hand over a picture, and get back a prefab that walks, runs and attacks. Or describe a
+prop (a barrel, a tree) or a diorama (a whole set piece) and get back a prefab with its collider.
 
 This package is the Unity end of [assetgen](https://github.com/adbedford-swe/asset-generation). It imports
-assetgen characters ready to use, generates new ones from an assetgen server without leaving the Editor,
-and adds `assetgen` commands to the Unity CLI so an agent can do the same.
+assetgen characters, props and dioramas ready to use, generates new ones from an assetgen server without leaving
+the Editor, and adds `assetgen` commands to the Unity CLI so an agent can do the same.
 
 ## Install
 
@@ -40,11 +41,31 @@ Clips play in place: the character file stores how fast each one travels, so you
 `AssetgenCharacter.MoveForward` moves the character, and the Animator never fights it. Above the fastest clip's
 speed, `AssetgenCharacter` speeds the animation up to keep the feet planted.
 
+## What an imported prop or diorama is
+
+A prop's `.assetgen` file says it is static (format `assetgen.prop`). Drop `barrel.glb` and `barrel.assetgen` under
+`Assets/` and the package builds:
+
+| Asset | What it holds |
+|---|---|
+| `barrel.assetgen` | The prop definition: prop or diorama, height and size, collider, and footprint (its outline seen from above, its radius, and the radius of its base). |
+| `barrel.prefab` | A variant of the model with its collider and an `AssetgenProp` component. Props get a convex `MeshCollider` on each mesh; dioramas a non-convex one (you walk on those) and are marked static; a file can also ask for one `BoxCollider` or none. |
+
+The model's origin is the centre of its base, on the ground, so it stands where you place it. Re-importing updates
+the prefab in place; colliders added to it by hand are replaced. Layout code can space props by their footprint:
+
+```csharp
+var barrel = GetComponent<AssetgenProp>();
+var clearance = barrel.FootprintRadius;          // world units, at the prop's scale
+var outline = barrel.Definition.outline;         // (x, z) points around the origin, seen from above
+```
+
 ## Generating from the Editor
 
-**Window > Assetgen.** Describe the character or pick a picture, choose the motions (or a preset) and press
-**Generate character**. Progress shows per stage, and the character is imported into `Assets/Characters/<name>/` when
-it finishes, even if you close the window. **Advanced** holds the image model (the models the server's image
+**Window > Assetgen.** Pick Character, Prop or Diorama, describe it or pick a picture, choose a character's motions
+(or a preset) and press **Generate**. Progress shows per stage, and the asset is imported into
+`Assets/Characters/<name>/` (props and dioramas: `Assets/Props/<name>/`) when it finishes, even if you close the
+window. **Advanced** holds the image model (the models the server's image
 generator can load, with Automatic first), Idol's steps, the motion sampler's steps, prompt strength, seed, loop
 length, root motion, mesh and texture budgets and rig candidates. They are saved with the project, so the window and
 the CLI generate the same way.
@@ -68,21 +89,22 @@ unity command assetgen generate --prompt "a goblin shaman with a lantern" \
     --motions '["An object stands idle.","An object walks forward.","An object casts a spell. [once]"]' \
     --wait true --timeout 1800
 unity command assetgen spawn --character a_goblin_shaman_with_a_lantern --position 0,0,2
+unity command assetgen generate --kind prop --prompt "a wooden barrel with iron bands" --height 1 --wait true --timeout 1800
 unity command editor.playmode start
 unity command assetgen play --target a_goblin_shaman_with_a_lantern --speed 0.5
 ```
 
 | Command | Does |
 |---|---|
-| `status` | The server, its devices and image backend, and the characters in the project. |
-| `generate` | Starts a character from `--prompt` and/or `--image`, starting the server if none answers. `--idol-steps`, `--motion-steps` and `--seed` override the project's settings. Returns the job id; with `--wait`, waits and returns the prefab. |
+| `status` | The server, its devices and image backend, and the characters and props in the project. |
+| `generate` | Starts a character from `--prompt` and/or `--image`, starting the server if none answers; `--kind prop` or `--kind diorama` makes a static asset instead. `--idol-steps`, `--motion-steps` and `--seed` override the project's settings. Returns the job id; with `--wait`, waits and returns the prefab. |
 | `wait --id` | Waits for a job, imports it, returns the prefab and its clips. |
 | `job --id` / `cancel --id` | A job's progress; stop it. |
 | `import --source` | A job id, an export zip, a folder or a `.glb`/`.assetgen` pair into the project. |
-| `list` | Every character in the project, with prefab and clips. |
+| `list` | Every character in the project, with prefab and clips; every prop and diorama, with its kind, size and collider. |
 | `image_models` | The text-to-image models the server can load, for `generate --image-model`. |
-| `build --character` | Rebuild a character's controller and prefab. |
-| `spawn --character` | Put a character in the open scene (`--position`, `--speed`, `--move-forward`). |
+| `build --character` | Rebuild a character's controller and prefab, or a prop's prefab. |
+| `spawn --character` | Put a character, prop or diorama in the open scene (`--position`; for characters `--speed`, `--move-forward`). |
 | `play --target` | In Play mode: play a clip, or set the locomotion speed. |
 | `assetgen.server start` / `stop` / `status` / `log` | Run the local server from the project's settings, stop the one Unity started, check it, read its log. |
 

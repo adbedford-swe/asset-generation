@@ -10,10 +10,13 @@ using UnityEngine;
 
 namespace Assetgen.Editor
 {
-    /// <summary>Brings characters into the project: from a server job, a zip, a folder or a .glb/.assetgen pair.</summary>
+    /// <summary>
+    /// Brings characters, props and dioramas into the project: from a server job, a zip, a folder or a
+    /// .glb/.assetgen pair. Characters go under the characters folder, props and dioramas under the props folder.
+    /// </summary>
     public static class CharacterImport
     {
-        /// <summary>Downloads a finished job's character, imports it and builds it. Returns the prefab path.</summary>
+        /// <summary>Downloads a finished job's asset, imports it and builds it. Returns the prefab path.</summary>
         public static async Task<string> FromJobAsync(string jobId, AssetgenClient client = null, CancellationToken ct = default)
         {
             client ??= new AssetgenClient();
@@ -29,8 +32,11 @@ namespace Assetgen.Editor
             using var archive = new ZipArchive(new MemoryStream(zip), ZipArchiveMode.Read);
             var files = archive.Entries.Where(e => !string.IsNullOrEmpty(e.Name)).ToList();
             var definitionEntry = files.FirstOrDefault(e => e.Name.EndsWith(".assetgen", StringComparison.OrdinalIgnoreCase))
-                                  ?? throw new InvalidDataException("the zip holds no .assetgen character file");
-            var folder = NewFolder(Path.GetFileNameWithoutExtension(definitionEntry.Name));
+                                  ?? throw new InvalidDataException("the zip holds no .assetgen file");
+            string json;
+            using (var reader = new StreamReader(definitionEntry.Open()))
+                json = reader.ReadToEnd();
+            var folder = NewFolder(Path.GetFileNameWithoutExtension(definitionEntry.Name), IsProp(json));
             var root = Path.GetFullPath(folder);
             foreach (var entry in files)
             {
@@ -45,8 +51,8 @@ namespace Assetgen.Editor
         }
 
         /// <summary>
-        /// Imports a character from anywhere on disk: an export zip, a folder holding one, or a .glb or
-        /// .assetgen file with its partner beside it. Returns the prefab path.
+        /// Imports a character, prop or diorama from anywhere on disk: an export zip, a folder holding one,
+        /// or a .glb or .assetgen file with its partner beside it. Returns the prefab path.
         /// </summary>
         public static string FromPath(string path)
         {
@@ -56,11 +62,11 @@ namespace Assetgen.Editor
             string definition;
             if (Directory.Exists(path))
                 definition = Directory.GetFiles(path, "*.assetgen", SearchOption.AllDirectories).FirstOrDefault()
-                             ?? throw new FileNotFoundException($"no .assetgen character file in {path}");
+                             ?? throw new FileNotFoundException($"no .assetgen file in {path}");
             else
                 definition = Path.ChangeExtension(path, ".assetgen");
             if (!File.Exists(definition))
-                throw new FileNotFoundException($"no character file at {definition}");
+                throw new FileNotFoundException($"no .assetgen file at {definition}");
 
             var projectPath = Path.GetFullPath(Directory.GetCurrentDirectory());
             if (definition.StartsWith(Path.Combine(projectPath, "Assets"), StringComparison.OrdinalIgnoreCase))
@@ -70,7 +76,7 @@ namespace Assetgen.Editor
                 return Build(assetPath);
             }
             var stem = Path.GetFileNameWithoutExtension(definition);
-            var folder = NewFolder(stem);
+            var folder = NewFolder(stem, IsProp(File.ReadAllText(definition)));
             var sourceFolder = Path.GetDirectoryName(definition) ?? ".";
             var kinds = new[] { ".glb", ".gltf", ".bin", ".assetgen", ".png" };
             foreach (var file in Directory.GetFiles(sourceFolder, stem + "*"))
@@ -87,18 +93,36 @@ namespace Assetgen.Editor
 
         static string Build(string definitionPath)
         {
-            var prefab = CharacterBuilder.Build(definitionPath);
-            var path = AssetDatabase.GetAssetPath(prefab);
+            var path = AssetDatabase.GetAssetPath(BuildPrefab(definitionPath));
             Debug.Log($"Assetgen: imported {path}");
             return path;
         }
 
-        /// <summary>A new, empty folder for a character under the characters folder: name, name 1, name 2, ...</summary>
-        static string NewFolder(string name)
+        /// <summary>Builds (or rebuilds) the prefab of an imported .assetgen file, whatever it describes.</summary>
+        public static GameObject BuildPrefab(string definitionPath) =>
+            AssetDatabase.LoadAssetAtPath<PropDefinition>(definitionPath) != null
+                ? PropBuilder.Build(definitionPath)
+                : CharacterBuilder.Build(definitionPath);
+
+        static bool IsProp(string json)
         {
-            var parent = AssetgenSettings.instance.charactersFolder.TrimEnd('/');
+            try
+            {
+                return CharacterImporter.FormatOf(json) == PropDefinition.Format;
+            }
+            catch (ArgumentException)
+            {
+                return false; // the importer reports what is wrong with the file
+            }
+        }
+
+        /// <summary>A new, empty folder under the characters (or props) folder: name, name 1, name 2, ...</summary>
+        static string NewFolder(string name, bool prop)
+        {
+            var settings = AssetgenSettings.instance;
+            var parent = ((prop ? settings.propsFolder : settings.charactersFolder) ?? "").TrimEnd('/');
             if (!parent.StartsWith("Assets", StringComparison.Ordinal))
-                parent = "Assets/Characters";
+                parent = prop ? "Assets/Props" : "Assets/Characters";
             Directory.CreateDirectory(parent);
             var folder = $"{parent}/{name}";
             for (var k = 1; Directory.Exists(folder); k++)
@@ -119,7 +143,19 @@ namespace Assetgen.Editor
             }
         }
 
-        /// <summary>A character's prefab, by character name, character file path or prefab path.</summary>
+        /// <summary>Every prop and diorama in the project: (prop file path, definition).</summary>
+        public static IEnumerable<(string path, PropDefinition definition)> AllProps()
+        {
+            foreach (var guid in AssetDatabase.FindAssets("t:PropDefinition"))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                var definition = AssetDatabase.LoadAssetAtPath<PropDefinition>(path);
+                if (definition != null)
+                    yield return (path, definition);
+            }
+        }
+
+        /// <summary>A character's or prop's prefab, by name, .assetgen file path or prefab path.</summary>
         public static GameObject FindPrefab(string nameOrPath)
         {
             if (nameOrPath.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
@@ -128,6 +164,11 @@ namespace Assetgen.Editor
             {
                 if (path == nameOrPath || definition.name == nameOrPath || definition.characterName == nameOrPath)
                     return AssetDatabase.LoadAssetAtPath<GameObject>(CharacterBuilder.PrefabPath(path));
+            }
+            foreach (var (path, definition) in AllProps())
+            {
+                if (path == nameOrPath || definition.name == nameOrPath || definition.propName == nameOrPath)
+                    return AssetDatabase.LoadAssetAtPath<GameObject>(PropBuilder.PrefabPath(path));
             }
             return null;
         }
