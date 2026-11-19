@@ -1,17 +1,19 @@
-"""Package a finished character for an engine.
+"""Package a finished asset (a character, a prop or a diorama) for an engine.
 
     assetgen export outputs/goblin --engine unity --project ~/MyGame      # straight into a Unity project
     assetgen export outputs/goblin --engine godot --project ~/my_godot_game
     assetgen export outputs/goblin --engine godot --zip                    # goblin-godot.zip to hand over
 
-Every export is the same few files: ``<name>.glb`` (mesh, skeleton, every clip),
-``<name>.assetgen`` (the character file), and the clip contact sheet. The engine
-integrations do the rest on import:
+Every export is the same few files: ``<name>.glb`` (mesh, and for characters the skeleton
+and every clip), ``<name>.assetgen`` (what kind of asset it is and how to set it up), and a
+preview picture. The engine integrations do the rest on import:
 
-  unity  the com.assetgen.unity package (in this repository's ``unity/`` folder) builds an
-         Animator Controller with a locomotion blend tree and a ready-to-use prefab.
+  unity  the com.assetgen.unity package (in this repository's ``unity/`` folder) builds a
+         prefab: for a character with an Animator Controller and a locomotion blend tree, for a
+         prop or diorama with its collider.
   godot  the ``assetgen`` addon (``godot/addons/assetgen``) sets each clip's loop mode and builds
-         an AnimationTree; the export writes the ``.glb.import`` that points Godot at it.
+         an AnimationTree, or gives a prop its static body and collision shape; the export writes
+         the ``.glb.import`` that points Godot at it.
 
 With ``--project`` the files are copied into the project, and the integration is added to it
 when it is missing (Unity: a ``Packages/manifest.json`` entry; Godot: the addon, enabled).
@@ -25,7 +27,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from . import character
+from . import assetfile, character
 from .thirdparty import ROOT
 
 ENGINES = ("unity", "godot", "gltf")
@@ -60,11 +62,8 @@ def find_asset(source: Path) -> Path:
 
 
 def ensure_character(glb: Path) -> Path:
-    """The character file beside ``glb``, written now for runs finalized before it existed."""
-    path = character.character_path(glb)
-    if not path.exists():
-        character.write(glb)
-    return path
+    """The asset file beside ``glb``, written now for character runs finalized before it existed."""
+    return assetfile.ensure(glb)
 
 
 def _godot_import_file(data: dict) -> str:
@@ -81,16 +80,18 @@ def export(source: Path, engine: str, out_dir: Path) -> Path:
     if engine not in ENGINES:
         raise ValueError(f"unknown engine {engine!r}; one of {', '.join(ENGINES)}")
     glb = find_asset(source)
-    data = character.load(ensure_character(glb))
+    data = assetfile.load(assetfile.ensure(glb))
     name = glb.stem
     data["model"]["file"] = glb.name  # the files travel together under the model's name
     folder = Path(out_dir) / name
     folder.mkdir(parents=True, exist_ok=True)
     shutil.copy2(glb, folder / glb.name)
-    (folder / f"{name}{character.EXTENSION}").write_text(json.dumps(data, indent=2))
     preview = glb.with_suffix(".png")
+    data.pop("preview", None)
     if preview.exists():
-        shutil.copy2(preview, folder / f"{name}_clips.png")
+        data["preview"] = f"{name}{'_clips' if data['format'] == character.FORMAT else '_preview'}.png"
+        shutil.copy2(preview, folder / data["preview"])
+    (folder / f"{name}{character.EXTENSION}").write_text(json.dumps(data, indent=2))
     if engine == "godot":
         (folder / f"{glb.name}.import").write_text(_godot_import_file(data))
     return folder

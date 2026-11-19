@@ -308,14 +308,27 @@ def splat_to_mesh(g: Gaussians, s: MeshSettings | None = None, log=print) -> Tex
     return TexturedMesh(vertices.astype(np.float32), ufaces.astype(np.int32), uv_gltf.astype(np.float32), texture)
 
 
-def export_glb(m: TexturedMesh, path) -> None:
+def to_trimesh(m: TexturedMesh, name: str | None = None):
     import trimesh
     from PIL import Image
 
     material = trimesh.visual.material.PBRMaterial(
-        baseColorTexture=Image.fromarray(m.texture), metallicFactor=0.0, roughnessFactor=0.9, doubleSided=False)
+        name=name, baseColorTexture=Image.fromarray(m.texture), metallicFactor=0.0, roughnessFactor=0.9,
+        doubleSided=False)
     # trimesh takes OpenGL-style UVs (v up) and flips them into glTF's convention on export.
     uv_gl = np.stack([m.uvs[:, 0], 1 - m.uvs[:, 1]], axis=1)
-    mesh = trimesh.Trimesh(m.vertices, m.faces, process=False,
+    return trimesh.Trimesh(m.vertices, m.faces, process=False,
                            visual=trimesh.visual.TextureVisuals(uv=uv_gl, material=material))
-    mesh.export(str(path))
+
+
+def export_glb(m: TexturedMesh, path, name: str | None = None) -> None:
+    """One textured mesh as a .glb; with ``name``, its node, mesh and material carry that name."""
+    import trimesh
+
+    mesh = to_trimesh(m, name)
+    if name is None:
+        mesh.export(str(path))
+        return
+    scene = trimesh.Scene()
+    scene.add_geometry(mesh, node_name=name, geom_name=name)
+    scene.export(str(path))

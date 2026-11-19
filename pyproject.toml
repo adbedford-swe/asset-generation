@@ -1,7 +1,7 @@
 [project]
 name = "assetgen"
-version = "0.3.0"
-description = "Image -> 3D Gaussian splat -> textured mesh -> rigged -> animated glTF, on ROCm"
+version = "0.4.0"
+description = "Text or image -> 3D Gaussian splat -> textured mesh -> rigged, animated character, prop or set piece (glTF), on ROCm"
 readme = "README.md"
 # One interpreter for every stage: bpy 4.5 only ships cp311 wheels, and a single
 # environment means one ROCm torch install (~15 GB) instead of one per stage.

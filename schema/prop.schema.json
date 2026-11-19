@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/adbedford-swe/asset-generation/main/schema/prop.schema.json",
+  "title": "assetgen prop",
+  "description": "Describes a generated static asset's glTF (<name>.glb beside this <name>.assetgen file): a prop, or a diorama (a whole set piece as one model). Engines read it to give the asset its collider; scene layouts read its footprint to space assets.",
+  "type": "object",
+  "required": ["format", "version", "name", "kind", "model", "collider", "footprint"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "format": {"const": "assetgen.prop"},
+    "version": {"const": 1},
+    "name": {"type": "string", "description": "Asset name; also the stem of the .glb and .assetgen files."},
+    "kind": {"enum": ["prop", "diorama"]},
+    "generator": {
+      "type": "object",
+      "properties": {"name": {"type": "string"}, "version": {"type": "string"}}
+    },
+    "source": {
+      "type": "object",
+      "description": "What the asset was made from.",
+      "properties": {
+        "prompt": {"type": "string"},
+        "image": {"type": "string"},
+        "splat": {"type": "string"},
+        "image_backend": {"type": "string"},
+        "image_model": {"type": ["string", "null"]},
+        "seed": {"type": ["integer", "null"]}
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["file", "units", "up", "forward", "pivot", "height", "size"],
+      "properties": {
+        "file": {"type": "string", "description": "The glTF binary, relative to this file."},
+        "units": {"const": "meters"},
+        "up": {"const": "+Y"},
+        "forward": {"const": "+Z", "description": "The asset's front faces +Z."},
+        "pivot": {"const": "base", "description": "The origin is the centre of the asset's base, on y = 0."},
+        "height": {"type": "number", "description": "Height in metres."},
+        "size": {"$ref": "#/$defs/vec3", "description": "Width (x), height (y) and depth (z) in metres."},
+        "bounds": {
+          "type": "object",
+          "properties": {"min": {"$ref": "#/$defs/vec3"}, "max": {"$ref": "#/$defs/vec3"}}
+        },
+        "vertices": {"type": "integer"},
+        "triangles": {"type": "integer"},
+        "texture": {"type": ["array", "null"], "items": {"type": "integer"}}
+      }
+    },
+    "collider": {
+      "type": "object",
+      "required": ["type", "box"],
+      "properties": {
+        "type": {"enum": ["convex", "box", "mesh", "none"],
+                 "description": "convex: the mesh's convex hull; mesh: the mesh itself (static only); box: the box below."},
+        "box": {
+          "type": "object",
+          "required": ["center", "size"],
+          "properties": {"center": {"$ref": "#/$defs/vec3"}, "size": {"$ref": "#/$defs/vec3"}}
+        }
+      }
+    },
+    "footprint": {
+      "type": "object",
+      "required": ["outline", "radius", "base_radius"],
+      "properties": {
+        "outline": {"type": "array", "items": {"$ref": "#/$defs/vec2"},
+                    "description": "Convex outline seen from above, (x, z) in metres, counter-clockwise."},
+        "radius": {"type": "number", "description": "The farthest the asset reaches from its pivot, seen from above."},
+        "base_radius": {"type": "number", "description": "The same for its base (the bottom tenth of its height)."}
+      }
+    },
+    "static": {"type": "boolean"},
+    "preview": {"type": "string", "description": "A picture of the asset from four sides."}
+  },
+  "$defs": {
+    "vec2": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+  }
+}

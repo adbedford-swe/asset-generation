@@ -283,10 +283,15 @@ def unload(spec: ImageSpec, log=print) -> bool:
 
 def generate(prompt: str, spec: ImageSpec, seed: int, count: int) -> list[bytes]:
     """Load the model if needed, generate, unload."""
+    return with_model(spec, lambda: sdapi(prompt, spec, seed, count))
+
+
+def with_model(spec: ImageSpec, call):
+    """``call()`` with sd-server's model loaded: load it if needed, and unload it after."""
     for _ in range(3):
         selection = load(spec)
         try:
-            return sdapi(prompt, spec, seed, count)
+            return call()
         except ModelNotLoaded:
             continue  # another job unloaded it between the load and the generation
         finally:

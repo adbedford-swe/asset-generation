@@ -1,12 +1,15 @@
-"""assetgen: text or image -> rigged, animated character for Unity, Godot or any glTF engine.
+"""assetgen: text or image -> rigged, animated character, prop or set piece for Unity, Godot or any glTF engine.
 
   assetgen setup                       fetch SkinTokens, UniMate and their weights
   assetgen doctor                      check GPU, packages, checkouts and weights
   assetgen run --text "a goblin shaman with a lantern" --out outputs/goblin
   assetgen run --image fig.png --out outputs/fig
+  assetgen run --kind prop --text "a wooden barrel with iron bands" --height 1.0 --out outputs/barrel
+  assetgen run --kind diorama --image ruins.png --height 3 --out outputs/ruins
   assetgen run --ply splat.ply --reference input.png --out outputs/x --from rig
   assetgen batch --images figs/ --out outputs --devices cuda:0,cuda:1
   assetgen batch --splats splats/ --out outputs --devices cuda:0,cuda:1
+  assetgen batch --kind prop --texts props.txt --out outputs/props   (an asset library, one prop per line)
   assetgen image --prompt "a goblin shaman" --out drafts/goblin --count 4   (text to image only)
   assetgen export outputs/goblin --engine unity --project ~/MyGame
   assetgen serve [--host 0.0.0.0]                       HTTP API and web UI (also: python server.py)
@@ -19,13 +22,18 @@ import re
 import sys
 from pathlib import Path
 
-from .imagegen import BACKENDS, ImageSpec
-from .pipeline import STAGES, Options, run
+from .imagegen import BACKENDS, STYLES, ImageSpec
+from .pipeline import KINDS, STAGES, STATIC_KINDS, Options, run
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
 
 def _add_run_options(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--kind", default="character", choices=KINDS,
+                    help="character: rigged and animated; prop: one static object (a barrel, a tree); diorama: "
+                         "a whole set piece as one static model. Props and dioramas stop after the mesh")
+    ap.add_argument("--collider", default="auto", choices=["auto", "convex", "box", "mesh", "none"],
+                    help="props and dioramas: the collider engines build (auto: convex; mesh for dioramas)")
     ap.add_argument("--name", default=None, help="asset name (default: the input file stem)")
     ap.add_argument("--device", default="cuda", help="cuda, cuda:N (ROCm GPUs are cuda devices) or cpu")
     ap.add_argument("--mode", default="synthetic", choices=["synthetic", "real"], help="Idol input type")
@@ -41,7 +49,8 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--idol-steps", type=int, default=None, help="Idol's image-to-splat sampling steps (default 50)")
     ap.add_argument("--fbx", action="store_true", help="also export every clip as FBX")
     ap.add_argument("--repetitions", type=int, default=1, help="motions per prompt")
-    ap.add_argument("--height", type=float, default=None, help="final asset height in metres")
+    ap.add_argument("--height", type=float, default=None,
+                    help="final asset height in metres (props and dioramas: default 1.0)")
     ap.add_argument("--rig-class", default=None, help="force a SkinTokens rig template (e.g. mixamo, vroid)")
     ap.add_argument("--num-beams", type=int, default=10, help="SkinTokens beam search width")
     ap.add_argument("--rig-candidates", type=int, default=3, help="rigs sampled per asset; the most plausible is kept")
@@ -62,7 +71,7 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--comfy-workflow", default=None, help="comfyui: an API-format workflow with {{prompt}}")
     ap.add_argument("--image-command", default=None, help='command backend: e.g. "sd-cli -p {prompt} -o {out}"')
     ap.add_argument("--raw-prompt", action="store_true",
-                    help="send --text to the image backend as written, without the full-body character framing")
+                    help="send --text to the image backend as written, without the framing for its kind")
     ap.add_argument("--image-keep-loaded", action="store_true",
                     help="sdcpp: leave sd-server's model loaded after the picture (default: unload it to free the GPU)")
     ap.add_argument("--from", dest="start", choices=STAGES, default=None, help="first stage to run")
@@ -77,7 +86,9 @@ def image_spec(a) -> ImageSpec:
     return ImageSpec.from_env(backend=a.image_backend, url=a.image_url, model=a.image_model, width=width,
                               height=height, steps=a.image_steps, workflow=a.comfy_workflow,
                               command=a.image_command, style=False if a.raw_prompt else None,
-                              keep_loaded=True if a.image_keep_loaded else None)
+                              keep_loaded=True if a.image_keep_loaded else None, kind=getattr(a, "kind", None),
+                              edit_workflow=getattr(a, "comfy_edit_workflow", None),
+                              edit_command=getattr(a, "image_edit_command", None))
 
 
 def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path | None, device: str,
@@ -88,13 +99,14 @@ def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path
         if value is not None:
             mesh_args += [flag, str(value)]
     stem = (image or ply).stem if (image or ply) else re.sub(r"[^A-Za-z0-9]+", "_", text or "asset").strip("_")[:32]
+    height = a.height if a.height is not None or a.kind not in STATIC_KINDS else 1.0
     return Options(out=out, text=text, image_spec=image_spec(a) if text else None, image=image, ply=ply,
                    reference=reference, name=a.name or stem.replace(" ", "_"),
                    device=device, mode=a.mode, seed=a.seed, prompts=a.prompt, repetitions=a.repetitions,
-                   height=a.height, rig_class=a.rig_class, num_beams=a.num_beams, rig_candidates=a.rig_candidates,
+                   height=height, rig_class=a.rig_class, num_beams=a.num_beams, rig_candidates=a.rig_candidates,
                    skin_postprocess=a.skin_postprocess, mesh_args=mesh_args, llm_base_url=a.llm_base_url,
                    llm_model=a.llm_model, cfg_scale=a.cfg_scale, loop=a.loop, root_motion=a.root_motion,
-                   flow_steps=a.flow_steps, idol_steps=a.idol_steps, fbx=a.fbx)
+                   flow_steps=a.flow_steps, idol_steps=a.idol_steps, fbx=a.fbx, kind=a.kind, collider=a.collider)
 
 
 def cmd_run(a) -> None:
@@ -185,7 +197,8 @@ def cmd_doctor(a) -> None:
 def cmd_image(a) -> None:
     from .imagegen import write
 
-    write(a.prompt, Path(a.out), image_spec(a), a.seed if a.seed >= 0 else None, a.count)
+    write(a.prompt, Path(a.out), image_spec(a), a.seed if a.seed >= 0 else None, a.count,
+          init=Path(a.init) if a.init else None, strength=a.strength)
 
 
 def cmd_export(a) -> None:
@@ -224,7 +237,7 @@ def main(argv=None) -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="one character: text, image or splat to animated glTF")
+    r = sub.add_parser("run", help="one asset: text, image or splat to an animated character, a prop or a diorama")
     r.add_argument("--text", default=None, help="describe the character; an image backend draws it first")
     r.add_argument("--image", default=None)
     r.add_argument("--ply", default=None, help="start from an existing splat instead of an image")
@@ -252,20 +265,23 @@ def main(argv=None) -> None:
         w = sub.add_parser(command, help=text, add_help=False)
         w.set_defaults(func=lambda a: __import__("assetgen.server", fromlist=["main"]).main(a.rest))
 
-    i = sub.add_parser("image", help="text to character image only (to try a prompt or a backend)")
+    i = sub.add_parser("image", help="text to picture only (to try a prompt or a backend), or redraw a picture")
     i.add_argument("--prompt", required=True)
+    i.add_argument("--kind", default="character", choices=sorted(STYLES), help="how to frame the prompt")
+    i.add_argument("--init", default=None, help="redraw this picture (image to image) instead")
+    i.add_argument("--strength", type=float, default=0.6, help="with --init: 0 keeps the picture, 1 ignores it")
     i.add_argument("--out", required=True)
     i.add_argument("--count", type=int, default=1)
     i.add_argument("--seed", type=int, default=-1)
     for flag in ("--image-backend", "--image-url", "--image-model", "--image-size", "--comfy-workflow",
-                 "--image-command"):
+                 "--image-command", "--comfy-edit-workflow", "--image-edit-command"):
         i.add_argument(flag, default=None)
     i.add_argument("--image-steps", type=int, default=None)
     i.add_argument("--raw-prompt", action="store_true")
     i.add_argument("--image-keep-loaded", action="store_true")
     i.set_defaults(func=cmd_image)
 
-    e = sub.add_parser("export", help="package a finished character for unity, godot or plain gltf")
+    e = sub.add_parser("export", help="package a finished asset for unity, godot or plain gltf")
     e.add_argument("source", help="a run folder or its <name>.glb")
     e.add_argument("--engine", choices=["unity", "godot", "gltf"], default="unity")
     e.add_argument("--project", default=None, help="copy straight into this Unity or Godot project")

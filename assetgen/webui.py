@@ -1,4 +1,5 @@
-"""Browser front end: describe or upload a character, watch every stage, take it to an engine.
+"""Browser front end: describe or upload a character, a prop or a diorama, watch every stage, take it
+to an engine.
 
 Served by ``assetgen serve`` (or ``python server.py``) next to the HTTP API, on the
 same job queue: a job started here shows up in the API and the Unity window, and
@@ -10,19 +11,20 @@ started from is never changed.
 from __future__ import annotations
 
 import html
+from dataclasses import replace
 from pathlib import Path
 
 import gradio as gr
 
 from .animate import DEFAULT_PROMPTS
 from .imagegen import BACKENDS, ImageSpec, probe
-from .pipeline import completed_stages
+from .pipeline import STATIC_KINDS, completed_stages
 from .server import JobManager, Settings, best_glb, slug, version
 
 MODEL_VIEWER = ('<script type="module" '
                 'src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js"></script>')
 EMPTY_VIEWER = ('<div style="height:520px;display:flex;align-items:center;justify-content:center;'
-                'border-radius:8px;background:#1d1d22;color:#888">The character appears here as stages finish</div>')
+                'border-radius:8px;background:#1d1d22;color:#888">The asset appears here as stages finish</div>')
 STAGE_LABELS = {"mesh": "Mesh (re-mesh the splat)", "rig": "Rig (keep the mesh)",
                 "animate": "Motion (keep mesh and rig)", "finalize": "Finalize (re-assemble the clips)"}
 STAGE_NAMES = {"image": "Image", "generate": "Splat", "mesh": "Mesh", "rig": "Rig", "animate": "Motion",
@@ -55,13 +57,13 @@ def clip_names(glb: Path) -> list[str]:
         return []
 
 
-def stage_images(out: Path, name: str) -> list[tuple[str, str]]:
+def stage_images(out: Path, name: str, kind: str = "character") -> list[tuple[str, str]]:
     candidates = [
         (out / "0_image" / "image.png", "Generated image"),
         (out / "1_mesh" / "front.png", "Mesh, front view (should face you)"),
         (out / "1_mesh" / "compare.png", "Splat (top) vs mesh (bottom), held-out views"),
         (out / "2_rig" / "preview.png", "Skeleton"),
-        (out / f"{name}.png", "Every clip"),
+        (out / f"{name}.png", "From four sides" if kind in STATIC_KINDS else "Every clip"),
     ]
     return [(str(p), caption) for p, caption in candidates if p.exists()]
 
@@ -76,9 +78,24 @@ def stage_strip(job) -> str:
     return f'<div class="stage-strip">{chips}</div><div style="font-size:13px;color:#aaa">{html.escape(status)}</div>'
 
 
+def prop_markdown(data: dict) -> str:
+    model, collider, fp = data["model"], data["collider"], data["footprint"]
+    width, height, depth = model["size"]
+    lines = [f"**{data['name']}**, a {data['kind']}: {width:.2f} x {height:.2f} x {depth:.2f} m (w x h x d), "
+             f"{model.get('triangles', 0):,} triangles",
+             f"{collider['type'].capitalize()} collider; reaches {fp['radius']:.2f} m from its pivot, "
+             f"{fp['base_radius']:.2f} m at its base"]
+    prompt = data.get("source", {}).get("prompt")
+    if prompt:
+        lines.insert(1, f"*{html.escape(prompt)}*")
+    return "\n\n".join(lines)
+
+
 def character_markdown(data: dict | None) -> str:
     if not data:
         return ""
+    if data.get("format") == "assetgen.prop":
+        return prop_markdown(data)
     model = data.get("model", {})
     rows = ["| Clip | Role | Loop | Length | Speed |", "|---|---|---|---|---|"]
     for c in data.get("clips", []):
@@ -115,7 +132,8 @@ def build(manager: JobManager | None = None):
     spec0 = manager.image_spec
 
     def settings(prompts, height, device, loop, loop_frames, root_motion, seed, repetitions, faces, texture,
-                 voxels, beams, candidates, rig_class, cfg_scale, llm_url, idol_steps, flow_steps) -> Settings:
+                 voxels, beams, candidates, rig_class, cfg_scale, llm_url, idol_steps, flow_steps, kind,
+                 collider) -> Settings:
         return Settings(motions=[p.strip() for p in prompts.splitlines() if p.strip()],
                         height=float(height) if height else None, device=device or "auto", seed=int(seed),
                         loop=(str(int(loop_frames)) if loop_frames else "auto") if loop else "off",
@@ -123,7 +141,8 @@ def build(manager: JobManager | None = None):
                         texture=int(texture), voxels=int(voxels), num_beams=int(beams),
                         rig_candidates=int(candidates), rig_class=rig_class or None,
                         cfg_scale=float(cfg_scale) if cfg_scale else None, llm_base_url=llm_url or None,
-                        idol_steps=int(idol_steps or 50), flow_steps=int(flow_steps or 32))
+                        idol_steps=int(idol_steps or 50), flow_steps=int(flow_steps or 32),
+                        kind=kind or "character", collider=collider or "auto")
 
     def image_spec(backend, url, model, size, steps) -> ImageSpec:
         try:
@@ -147,7 +166,7 @@ def build(manager: JobManager | None = None):
         final = job.folder / f"{job.name}.glb"
         clips = clip_names(final) if final.exists() else []
         clip = clip if clip in clips else (clips[0] if clips else None)
-        return (stage_strip(job), stage_images(job.folder, job.name), viewer_html(glb, clip),
+        return (stage_strip(job), stage_images(job.folder, job.name, job.kind), viewer_html(glb, clip),
                 gr.update(choices=clips, value=clip), str(final) if final.exists() else None,
                 exports_for(job) if final.exists() else None, character_markdown(job.character()))
 
@@ -159,7 +178,8 @@ def build(manager: JobManager | None = None):
             glb = best_glb(job.folder, job.name)
             viewer = gr.update(value=viewer_html(glb)) if glb != shown else gr.update()
             shown = glb
-            yield (stage_strip(job), "\n".join(job.lines[-400:]), stage_images(job.folder, job.name), viewer,
+            yield (stage_strip(job), "\n".join(job.lines[-400:]), stage_images(job.folder, job.name, job.kind),
+                   viewer,
                    gr.update(), None, None, "", job.id, gr.update())
         strip, gallery, viewer, clip, glb_file, exports, summary = results(job)
         yield (strip, "\n".join(job.lines[-400:]), gallery, viewer, clip, glb_file, exports, summary, job.id,
@@ -171,18 +191,18 @@ def build(manager: JobManager | None = None):
         except (ValueError, KeyError) as e:
             raise gr.Error(str(e))
 
-    def preview_images(text, backend, url, model, size, steps, count, seed):
+    def preview_images(text, backend, url, model, size, steps, count, seed, kind):
         if not (text or "").strip():
-            raise gr.Error("Describe the character first.")
+            raise gr.Error("Describe it first.")
         try:
             draft = manager.draft_images(text.strip(), int(count), int(seed) if seed is not None else None,
-                                         image_spec(backend, url, model, size, steps))
+                                         replace(image_spec(backend, url, model, size, steps), kind=kind))
         except gr.Error:
             raise
         except Exception as e:
             raise gr.Error(f"Image backend failed: {e}")
         paths = [str(manager.draft_path(draft["id"], k)) for k in range(draft["count"])]
-        return paths, {"id": draft["id"], "index": 0, "prompt": text.strip()}
+        return paths, {"id": draft["id"], "index": 0, "prompt": text.strip(), "kind": kind}
 
     def pick_candidate(state, evt: gr.SelectData):
         return {**state, "index": evt.index} if state else None
@@ -190,16 +210,17 @@ def build(manager: JobManager | None = None):
     def start_text(text, draft, backend, url, model, size, steps, name, *rest):
         text = (text or "").strip()
         if not text:
-            raise gr.Error("Describe the character first.")
-        use_draft = bool(draft) and draft.get("prompt") == text
+            raise gr.Error("Describe it first.")
+        s = settings(*rest)
+        use_draft = bool(draft) and draft.get("prompt") == text and draft.get("kind", "character") == s.kind
         job = submit(prompt=text, draft=(draft["id"], draft["index"]) if use_draft else None,
-                     name=name or slug(text)[:32], settings=settings(*rest),
+                     name=name or slug(text)[:32], settings=s,
                      image_spec=image_spec(backend, url, model, size, steps))
         yield from follow(job)
 
     def start_image(image, mode, name, *rest):
         if not image:
-            raise gr.Error("Upload an image of the character.")
+            raise gr.Error("Upload an image of what to make.")
         s = settings(*rest)
         s.mode = mode
         yield from follow(submit(image=Path(image), name=name or None, settings=s))
@@ -244,6 +265,14 @@ def build(manager: JobManager | None = None):
             except KeyError:
                 pass
 
+    def kind_changed(kind, height):
+        static = kind in STATIC_KINDS
+        if static and height == 1.8:
+            height = 1.0
+        elif not static and height == 1.0:
+            height = 1.8
+        return gr.update(visible=not static), gr.update(visible=not static), gr.update(visible=static), height
+
     def backend_status(backend, url, model=None):
         """The backend's state, and the model picker's choices (sd-server's catalog for sdcpp)."""
         spec = ImageSpec(backend=backend, url=url or None, command=spec0.command, workflow=spec0.workflow)
@@ -276,14 +305,18 @@ def build(manager: JobManager | None = None):
 
     with gr.Blocks(title="assetgen") as demo:
         gr.Markdown(f"## assetgen <small style='color:#888'>{version()}</small>\n"
-                    "Text or a picture in; a textured, rigged character with looping animation clips out, "
-                    "ready for Unity and Godot. [API reference](/docs)")
+                    "Text or a picture in; a rigged character with looping animation clips, a prop or a whole "
+                    "set piece out, ready for Unity and Godot. [API reference](/docs)")
         job_state = gr.State("")
         draft_state = gr.State(None)
         with gr.Row():
             with gr.Column(scale=4):
+                kind = gr.Radio([("Character", "character"), ("Prop", "prop"), ("Diorama", "diorama")],
+                                value="character", label="Make a",
+                                info="Character: rigged and animated. Prop: one static object (a barrel, a tree). "
+                                     "Diorama: a whole set piece as one static model.")
                 with gr.Tab("From text"):
-                    text = gr.Textbox(label="Describe the character", lines=2, max_lines=6,
+                    text = gr.Textbox(label="Describe it", lines=2, max_lines=6,
                                       placeholder="a goblin shaman with a lantern and a hooded cloak")
                     with gr.Row():
                         count = gr.Slider(1, 8, value=4, step=1, label="Candidates")
@@ -291,7 +324,7 @@ def build(manager: JobManager | None = None):
                     preview = gr.Button("Preview images")
                     candidates = gr.Gallery(label="Pick one, or generate straight away", columns=4, height=220,
                                             allow_preview=False, object_fit="contain")
-                    go_text = gr.Button("Generate character", variant="primary")
+                    go_text = gr.Button("Generate", variant="primary")
                     with gr.Accordion("Image generator", open=False):
                         backend = gr.Dropdown(sorted(BACKENDS), value=spec0.backend, label="Backend",
                                               info="sdcpp: stable-diffusion.cpp's sd-server (also A1111, Forge)")
@@ -309,15 +342,15 @@ def build(manager: JobManager | None = None):
                             backend_info = gr.Markdown("")
                             refresh_models = gr.Button("↻", scale=0, min_width=40)
                 with gr.Tab("From an image"):
-                    image = gr.Image(type="filepath", label="Character image", height=300)
+                    image = gr.Image(type="filepath", label="Picture of it", height=300)
                     mode = gr.Radio(["synthetic", "real"], value="synthetic", label="Image type",
                                     info="synthetic: renders and generated art; real: photographs")
-                    go_image = gr.Button("Generate character", variant="primary")
+                    go_image = gr.Button("Generate", variant="primary")
                 with gr.Tab("From a splat"):
                     ply = gr.File(label="3D Gaussian splat (.ply)", file_types=[".ply"], type="filepath")
                     reference = gr.Image(type="filepath", label="Idol's input image (optional, for facing)",
                                          height=200)
-                    go_splat = gr.Button("Generate character", variant="primary")
+                    go_splat = gr.Button("Generate", variant="primary")
                 with gr.Tab("Continue a run"):
                     with gr.Row():
                         runs = gr.Dropdown(list_runs(manager), label="Earlier run", scale=5,
@@ -334,7 +367,7 @@ def build(manager: JobManager | None = None):
                                      label="Motions, one per line",
                                      info='Start with "An object" and describe one motion. Clips loop seamlessly; '
                                           'end a line with [once] for a one-shot (attack, jump).')
-                with gr.Row():
+                with gr.Row() as loop_row:
                     loop = gr.Checkbox(value=True, label="Seamless loops",
                                        info="Loop length follows each motion's own cycle")
                     loop_frames = gr.Number(value=0, precision=0, minimum=0, maximum=600,
@@ -344,6 +377,9 @@ def build(manager: JobManager | None = None):
                                               info="Off: loops play in place; their speed is in the character file")
                 with gr.Row():
                     height = gr.Number(value=1.8, label="Height (m)", minimum=0.01)
+                    collider = gr.Dropdown([("Automatic", "auto"), ("Convex hull", "convex"), ("Mesh", "mesh"),
+                                            ("Box", "box"), ("None", "none")], value="auto", label="Collider",
+                                           visible=False, info="Automatic: convex for props, mesh for dioramas")
                     device = gr.Dropdown(devices, value=devices[0], label="Device")
                 with gr.Accordion("Advanced", open=False):
                     with gr.Row():
@@ -380,10 +416,11 @@ def build(manager: JobManager | None = None):
                 log = gr.Textbox(label="Log", lines=12, max_lines=12, autoscroll=True)
 
         common = [prompts, height, device, loop, loop_frames, root_motion, seed, repetitions, faces, texture, voxels,
-                  beams, rig_candidates, rig_class, cfg_scale, llm_url, idol_steps, flow_steps]
+                  beams, rig_candidates, rig_class, cfg_scale, llm_url, idol_steps, flow_steps, kind, collider]
         image_controls = [backend, backend_url, image_model, image_size, image_steps]
         outputs = [strip, log, gallery, viewer, clip, download, exports, summary, job_state, runs]
-        preview.click(preview_images, [text, *image_controls, count, img_seed], [candidates, draft_state])
+        preview.click(preview_images, [text, *image_controls, count, img_seed, kind], [candidates, draft_state])
+        kind.change(kind_changed, [kind, height], [prompts, loop_row, collider, height])
         candidates.select(pick_candidate, draft_state, draft_state)
         go_text.click(start_text, [text, draft_state, *image_controls, name, *common], outputs)
         go_image.click(start_image, [image, mode, name, *common], outputs)

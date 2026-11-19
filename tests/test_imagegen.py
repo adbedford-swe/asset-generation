@@ -41,7 +41,7 @@ class StubImageServer(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         StubImageServer.requests.append((self.path, body, self.headers.get("Authorization")))
-        if self.path == "/sdapi/v1/txt2img":
+        if self.path in ("/sdapi/v1/txt2img", "/sdapi/v1/img2img"):
             n = body.get("batch_size", 1)
             self._json({"images": [base64.b64encode(png((40 * k, 80, 120))).decode() for k in range(n)],
                         "parameters": body, "info": ""})
@@ -310,3 +310,45 @@ def test_image_models_endpoint(sd_server, tmp_path):
     assert {o["id"] for o in data["options"]} == {"sd1-checkpoint:checkpoints/sd15-q4_0.gguf",
                                                  "sdxl-checkpoint:checkpoints/sdxl-base-1.0.safetensors"}
     assert data["automatic"] is None and data["loaded"] is None and data["error"] is None
+
+
+def test_each_kind_is_framed_for_its_use(image_server):
+    imagegen.generate("a wooden barrel.", ImageSpec(backend="a1111", url=image_server, kind="prop"), seed=1)
+    body = StubImageServer.requests[0][1]
+    assert body["prompt"].startswith("a wooden barrel, a single game prop")
+    assert body["negative_prompt"] == imagegen.NEGATIVES["prop"]
+    with pytest.raises(ValueError, match="unknown kind"):
+        imagegen.frame("x", ImageSpec(kind="vehicle"))
+
+
+def test_redraw_sends_the_picture_fitted_to_the_canvas(image_server, tmp_path):
+    crop = Image.new("RGBA", (300, 100), (0, 0, 0, 0))
+    crop.paste((200, 30, 30, 255), (100, 0, 200, 100))
+    crop.save(tmp_path / "crop.png")
+    Image.new("L", (300, 100), 255).save(tmp_path / "mask.png")
+    spec = ImageSpec(backend="a1111", url=image_server, kind="prop", width=512, height=512)
+    imagegen.write("a red crate", tmp_path / "out", spec, seed=3, init=tmp_path / "crop.png", strength=0.45,
+                   mask=tmp_path / "mask.png", log=lambda *_: None)
+    path, body, _ = StubImageServer.requests[0]
+    assert path == "/sdapi/v1/img2img" and body["denoising_strength"] == 0.45
+    init = Image.open(io.BytesIO(base64.b64decode(body["init_images"][0])))
+    assert init.size == (512, 512)
+    assert init.getpixel((256, 256)) == (200, 30, 30) and init.getpixel((5, 5)) == (255, 255, 255)
+    mask = Image.open(io.BytesIO(base64.b64decode(body["mask"]))).convert("L")
+    assert mask.getpixel((256, 256)) == 255 and mask.getpixel((256, 5)) == 0  # outside the picture stays
+    meta = json.loads((tmp_path / "out" / "image.json").read_text())
+    assert meta["init"] == "crop.png" and meta["strength"] == 0.45 and meta["kind"] == "prop"
+
+
+def test_command_backend_redraws_with_its_edit_template(tmp_path):
+    script = tmp_path / "redraw.py"
+    script.write_text("import sys\nfrom PIL import Image\n"
+                      "Image.open(sys.argv[1]).point(lambda v: 255 - v).save(sys.argv[2])\n")
+    import sys
+
+    spec = ImageSpec(backend="command", command="unused {prompt} {out}", width=32, height=32,
+                     edit_command=f'"{sys.executable}" "{script}" {{init}} {{out}}')
+    images = imagegen.generate("a cat", spec, seed=3, init=Image.new("RGB", (32, 32), (10, 20, 30)))
+    assert images[0].getpixel((0, 0)) == (245, 235, 225)
+    with pytest.raises(ValueError, match=r"with \{init\}"):
+        imagegen.generate("a cat", ImageSpec(backend="command", command="x {out}"), init=Image.new("RGB", (4, 4)))
