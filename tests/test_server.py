@@ -199,3 +199,67 @@ def test_prop_jobs_stop_after_the_mesh(api, fake_pipeline):
     again = client.post(f"/api/v1/jobs/{job['id']}/continue", json={"from": "finalize"}).json()
     assert again["kind"] == "prop" and list(again["stages"]) == ["finalize"]
     assert wait_for(manager.get(again["id"])) == "done" and fake_pipeline[-1].kind == "prop"
+
+
+@pytest.fixture
+def fake_scene(monkeypatch, finished):  # noqa: F811
+    """Stands in for the scene build: reports each step and leaves a finished scene behind."""
+    import assetgen.scene.build
+    import assetgen.scene.plan
+
+    calls = []
+
+    def build(spec, out, devices=None, image_spec=None, log=print, cancel=None, on_stage=None, **kwargs):
+        calls.append((spec, out, devices, kwargs))
+        for step in server.SCENE_STEPS:
+            on_stage(step, "running")
+            on_stage(step, "done")
+        shutil.copy2(finished, out / f"{spec.name}.glb")
+        (out / f"{spec.name}.assetgen").write_text(json.dumps({"format": "assetgen.scene", "version": 1,
+                                                               "name": spec.name,
+                                                               "model": {"file": f"{spec.name}.glb"}}))
+        return out / f"{spec.name}.assetgen"
+
+    def plan(description, url, model="local", size=None, log=print, **kwargs):
+        calls.append(("plan", description, url, model))
+        return assetgen.scene.plan.EXAMPLE
+
+    monkeypatch.setattr(assetgen.scene.build, "build", build)
+    monkeypatch.setattr(assetgen.scene.plan, "plan", plan)
+    return calls
+
+
+def test_scene_jobs(api, fake_scene):
+    from assetgen.scene.plan import EXAMPLE
+
+    client, manager = api
+    assert client.get("/api/v1/scenes/example").json() == EXAMPLE
+    job = client.post("/api/v1/scenes", json={"spec": EXAMPLE, "settings": {"faces": 8000}}).json()
+    assert job["kind"] == "scene" and list(job["stages"]) == ["props", "ground", "layout", "assemble"]
+    assert job["input"]["objects"] == [o["id"] for o in EXAMPLE["objects"]]
+    assert wait_for(manager.get(job["id"])) == "done"
+    spec, out, devices, kwargs = fake_scene[-1]
+    assert spec.name == "forest_camp" and devices == ["cpu"] and kwargs["mesh_args"][1] == "8000"
+    assert client.get(f"/api/v1/jobs/{job['id']}/export/godot").status_code == 200
+
+    bad = dict(EXAMPLE, objects=[{"id": "x", "prompt": "x", "place": [[0, 0]]}])
+    r = client.post("/api/v1/scenes", json={"spec": bad})
+    assert r.status_code == 422 and "height" in r.json()["detail"]
+    r = client.post("/api/v1/scenes", json={"prompt": "a forest camp"})
+    assert r.status_code == 422 and "language model" in r.json()["detail"]
+
+    planned = client.post("/api/v1/scenes", json={"prompt": "a forest camp", "name": "camp",
+                                                  "llm": {"base_url": "http://127.0.0.1:9/v1"}}).json()
+    assert list(planned["stages"]) == ["plan", "props", "ground", "layout", "assemble"]
+    assert wait_for(manager.get(planned["id"])) == "done"
+    assert fake_scene[-2] == ("plan", "a forest camp", "http://127.0.0.1:9/v1", "local")
+    assert fake_scene[-1][0].name == "camp"
+
+    (manager.root / job["id"] / "props" / "pine").mkdir(parents=True)
+    again = client.post("/api/v1/scenes", json={"spec": EXAMPLE, "from": job["id"]}).json()
+    assert (manager.root / again["id"] / "props" / "pine").is_dir() and again["source"] == job["id"]
+    assert client.post(f"/api/v1/jobs/{job['id']}/continue", json={"from": "mesh"}).status_code == 422
+
+    manager.jobs.clear()  # as after a restart: scenes are found again from their folders
+    listed = {j["id"]: j for j in client.get("/api/v1/jobs").json()["jobs"]}
+    assert listed[job["id"]]["kind"] == "scene" and listed[job["id"]]["status"] == "done"

@@ -1,10 +1,11 @@
 # Assetgen for Unity
 
 Describe a character, or hand over a picture, and get back a prefab that walks, runs and attacks. Or describe a
-prop (a barrel, a tree) or a diorama (a whole set piece) and get back a prefab with its collider.
+prop (a barrel, a tree) or a diorama (a whole set piece) and get back a prefab with its collider, or a whole scene
+and get back an environment to walk around in.
 
 This package is the Unity end of [assetgen](https://github.com/adbedford-swe/asset-generation). It imports
-assetgen characters, props and dioramas ready to use, generates new ones from an assetgen server without leaving
+assetgen characters, props, dioramas and scenes ready to use, generates new ones from an assetgen server without leaving
 the Editor, and adds `assetgen` commands to the Unity CLI so an agent can do the same.
 
 ## Install
@@ -60,12 +61,35 @@ var clearance = barrel.FootprintRadius;          // world units, at the prop's s
 var outline = barrel.Definition.outline;         // (x, z) points around the origin, seen from above
 ```
 
+## What an imported scene is
+
+A scene is a ground and objects laid out on it, all in one model, with each object also on its own as a prop.
+Drop the export (`camp.glb`, `camp.assetgen` and its `assets/` folder) under `Assets/` and the package builds:
+
+| Asset | What it holds |
+|---|---|
+| `camp.assetgen` | The scene definition: the ground, each kind of object (its prop file, height, collider and footprint) and every placement (node, position, rotation, scale). |
+| `camp.prefab` | A variant of the scene model, all static: a `MeshCollider` on the ground, and on each placement the collider its object asks for (convex or non-convex mesh colliders, or a box), with an `AssetgenScene` component. |
+| `assets/pine.prefab`, ... | Each object as a prop (see above), to place more of by hand. |
+
+Each object's mesh is stored once in the model and every placement points at it. `AssetgenScene` says which object
+a placement, or a collider a ray hit, is:
+
+```csharp
+var camp = GetComponent<AssetgenScene>();
+foreach (var pine in camp.InstancesOf("pine")) { /* ... */ }
+if (Physics.Raycast(ray, out var hit))
+    Debug.Log(camp.ObjectOf(hit.transform)?.id ?? "the ground");
+```
+
 ## Generating from the Editor
 
 **Window > Assetgen.** Pick Character, Prop or Diorama, describe it or pick a picture, choose a character's motions
 (or a preset) and press **Generate**. Progress shows per stage, and the asset is imported into
 `Assets/Characters/<name>/` (props and dioramas: `Assets/Props/<name>/`) when it finishes, even if you close the
-window. **Advanced** holds the image model (the models the server's image
+window. **Scene** takes a description, which the server's language model plans into a scene (start the server with
+`--llm-base-url`), or a scene spec file, and optionally an earlier scene whose objects to reuse; scenes are imported
+into `Assets/Environments/<name>/`. **Advanced** holds the image model (the models the server's image
 generator can load, with Automatic first), Idol's steps, the motion sampler's steps, prompt strength, seed, loop
 length, root motion, mesh and texture budgets and rig candidates. They are saved with the project, so the window and
 the CLI generate the same way.
@@ -90,21 +114,23 @@ unity command assetgen generate --prompt "a goblin shaman with a lantern" \
     --wait true --timeout 1800
 unity command assetgen spawn --character a_goblin_shaman_with_a_lantern --position 0,0,2
 unity command assetgen generate --kind prop --prompt "a wooden barrel with iron bands" --height 1 --wait true --timeout 1800
+unity command assetgen scene --spec camp.json --wait true --timeout 3600
 unity command editor.playmode start
 unity command assetgen play --target a_goblin_shaman_with_a_lantern --speed 0.5
 ```
 
 | Command | Does |
 |---|---|
-| `status` | The server, its devices and image backend, and the characters and props in the project. |
+| `status` | The server, its devices and image backend, and the characters, props and scenes in the project. |
 | `generate` | Starts a character from `--prompt` and/or `--image`, starting the server if none answers; `--kind prop` or `--kind diorama` makes a static asset instead. `--idol-steps`, `--motion-steps` and `--seed` override the project's settings. Returns the job id; with `--wait`, waits and returns the prefab. |
+| `scene` | Starts a scene from `--prompt` (planned by the server's language model) or `--spec` (a scene spec file or JSON); `--from` reuses an earlier scene's objects. Returns the job id; with `--wait`, waits and returns the prefab. |
 | `wait --id` | Waits for a job, imports it, returns the prefab and its clips. |
 | `job --id` / `cancel --id` | A job's progress; stop it. |
 | `import --source` | A job id, an export zip, a folder or a `.glb`/`.assetgen` pair into the project. |
-| `list` | Every character in the project, with prefab and clips; every prop and diorama, with its kind, size and collider. |
+| `list` | Every character in the project, with prefab and clips; every prop and diorama, with its kind, size and collider; every scene, with its objects. |
 | `image_models` | The text-to-image models the server can load, for `generate --image-model`. |
-| `build --character` | Rebuild a character's controller and prefab, or a prop's prefab. |
-| `spawn --character` | Put a character, prop or diorama in the open scene (`--position`; for characters `--speed`, `--move-forward`). |
+| `build --character` | Rebuild a character's controller and prefab, or a prop's or scene's prefab. |
+| `spawn --character` | Put a character, prop, diorama or generated scene in the open scene (`--position`; for characters `--speed`, `--move-forward`). |
 | `play --target` | In Play mode: play a clip, or set the locomotion speed. |
 | `assetgen.server start` / `stop` / `status` / `log` | Run the local server from the project's settings, stop the one Unity started, check it, read its log. |
 

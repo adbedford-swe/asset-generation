@@ -77,7 +77,7 @@ namespace Assetgen
         }
 
         // Every file has the box, so a collider type this package does not know falls back to it.
-        static ColliderType ParseCollider(string type)
+        internal static ColliderType ParseCollider(string type)
         {
             switch (type)
             {
@@ -88,9 +88,10 @@ namespace Assetgen
             }
         }
 
-        static Vector3 Size(float[] v) => v != null && v.Length == 3 ? new Vector3(v[0], v[1], v[2]) : Vector3.zero;
+        internal static Vector3 Size(float[] v) => v != null && v.Length == 3 ? new Vector3(v[0], v[1], v[2]) : Vector3.zero;
 
-        static Vector3 Position(float[] v) => v != null && v.Length == 3 ? new Vector3(-v[0], v[1], v[2]) : Vector3.zero;
+        /// <summary>A glTF position in Unity axes.</summary>
+        internal static Vector3 Position(float[] v) => v != null && v.Length == 3 ? new Vector3(-v[0], v[1], v[2]) : Vector3.zero;
 
         static readonly Regex OutlinePattern = new Regex(@"""outline""\s*:\s*\[((?:\s*\[[^\[\]]*\]\s*,?)*)\s*\]");
         static readonly Regex PointPattern = new Regex(@"\[\s*([^,\[\]]+?)\s*,\s*([^,\[\]]+?)\s*\]");

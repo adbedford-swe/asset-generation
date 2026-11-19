@@ -1,7 +1,8 @@
 """The assetgen server: an HTTP API and the web UI, sharing one job queue.
 
 A job makes one asset: a character (rigged and animated), a prop or a diorama
-(static, finalized straight after the mesh).
+(static, finalized straight after the mesh), or a whole scene (every object in a
+scene spec, the ground, the layout; see :mod:`assetgen.scene`).
 
     python server.py                          # http://127.0.0.1:7860 (UI), /api/v1 (API), /docs (API reference)
     assetgen serve --host 0.0.0.0 --devices cuda:0,cuda:1 --image-backend sdcpp --image-url http://127.0.0.1:1234
@@ -47,6 +48,7 @@ DRAFTS = "_drafts"
 UPLOADS = "_uploads"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 MAX_LOG_LINES = 5000
+SCENE_STEPS = ["props", "ground", "layout", "assemble"]
 
 
 def version() -> str:
@@ -142,6 +144,10 @@ class Job:
         self.source = source
         self.status = status
         self.kind = options.kind if options is not None else (settings.kind if settings else "character")
+        self.scene: dict | None = None          # scenes: the spec to build
+        self.description: str | None = None     # scenes: what the spec was planned from, when it was
+        self.plans = False                      # scenes: the job starts by planning its spec
+        self.llm: tuple[str | None, str] | None = None
         self.stage: str | None = None
         self.stages: dict[str, str] = {}
         self.error: str | None = None
@@ -156,6 +162,8 @@ class Job:
     @classmethod
     def from_folder(cls, folder: Path) -> "Job":
         """A job for a run folder made earlier (by this server, the old web UI or the CLI)."""
+        if (folder / "scene.json").exists() and not (folder / "run.json").exists():
+            return cls.scene_from_folder(folder)
         try:
             inputs = run_inputs(folder)
         except Exception:
@@ -169,6 +177,18 @@ class Job:
         job.status = "done" if finished else "incomplete"
         job.created = job.finished = (folder / "manifest.json").stat().st_mtime if (folder / "manifest.json").exists() \
             else folder.stat().st_mtime
+        return job
+
+    @classmethod
+    def scene_from_folder(cls, folder: Path) -> "Job":
+        scene = json.loads((folder / "scene.json").read_text())
+        name = scene.get("name") or folder.name
+        job = cls(folder, name, status="done")
+        job.kind, job.scene = "scene", scene
+        finished = (folder / f"{name}.assetgen").exists()
+        job.stages = {s: "done" for s in SCENE_STEPS} if finished else {}
+        job.status = "done" if finished else "incomplete"
+        job.created = job.finished = (folder / "scene.json").stat().st_mtime
         return job
 
     def log(self, line: str) -> None:
@@ -205,6 +225,8 @@ class Job:
         return self.status in ("queued", "running")
 
     def planned_stages(self) -> list[str]:
+        if self.kind == "scene":
+            return (["plan"] if self.plans else []) + SCENE_STEPS
         if self.options is None:
             return [s for s in STAGES if s in self.stages]
         inputs = self.options
@@ -237,6 +259,11 @@ class Job:
             return None
 
     def input_summary(self) -> dict:
+        if self.kind == "scene":
+            out = {"prompt": self.description}
+            if self.scene:
+                out["objects"] = [o.get("id") for o in self.scene.get("objects", [])]
+            return {k: v for k, v in out.items() if v}
         if self.options is not None:
             o = self.options
             inputs = {"text": o.text, "image": o.image, "ply": o.ply, "reference": o.reference}
@@ -285,8 +312,10 @@ class JobManager:
     """Runs jobs on a pool of devices, one job per device at a time, and remembers them."""
 
     def __init__(self, root: Path = OUT_ROOT, devices: list[str] | None = None,
-                 image_spec: ImageSpec | None = None):
+                 image_spec: ImageSpec | None = None, llm: tuple[str | None, str] | None = None):
         self.root = Path(root)
+        # The language model that plans scenes from a description: (OpenAI-compatible base URL, model).
+        self.llm = llm or (os.environ.get("ASSETGEN_LLM_URL"), os.environ.get("ASSETGEN_LLM_MODEL", "local"))
         self.root.mkdir(parents=True, exist_ok=True)
         self.devices = devices or detect_devices()
         self.image_spec = image_spec or ImageSpec.from_env()
@@ -309,7 +338,7 @@ class JobManager:
             job = self.jobs.get(job_id)
         if job is None:
             folder = self.root / job_id
-            if not (folder / "manifest.json").exists() and not (folder / "run.json").exists():
+            if not any((folder / f).exists() for f in ("manifest.json", "run.json", "scene.json")):
                 raise KeyError(job_id)
             job = Job.from_folder(folder)
             with self.lock:
@@ -318,7 +347,8 @@ class JobManager:
 
     def list(self, limit: int | None = None) -> list[Job]:
         folders = sorted((p for p in self.root.iterdir() if p.is_dir() and not p.name.startswith("_")
-                          and ((p / "manifest.json").exists() or (p / "run.json").exists())), reverse=True)
+                          and any((p / f).exists() for f in ("manifest.json", "run.json", "scene.json"))),
+                         reverse=True)
         jobs = []
         for folder in folders[:limit] if limit else folders:
             try:
@@ -424,9 +454,65 @@ class JobManager:
         job = Job(folder, name, o, None, settings, source=None)
         return self._enqueue(job)
 
+    def submit_scene(self, *, spec: dict | None = None, description: str | None = None, name: str | None = None,
+                     source: str | None = None, settings: Settings | None = None,
+                     llm: tuple[str | None, str] | None = None) -> Job:
+        """Queue a scene: from ``spec`` (a scene spec), or planned from ``description`` by the language model.
+        With ``source`` (an earlier scene's job id), its finished objects and ground are reused where the
+        spec still asks for them. In the spec, "upload:<id>" names a file from POST /uploads."""
+        from .scene import SpecError, parse
+
+        if not spec and not description:
+            raise ValueError("give a scene spec, or a description to plan one from")
+        llm = llm or self.llm
+        if not spec and not (llm and llm[0]):
+            raise ValueError("planning a scene from a description needs a language model: start the server with "
+                             "--llm-base-url (or ASSETGEN_LLM_URL), or send a spec")
+        if spec:
+            spec = self._resolve_uploads(spec)
+            try:
+                parse(spec)
+            except SpecError as e:
+                raise ValueError(f"scene spec: {e}")
+        name = slug(name or (spec or {}).get("name") or description or "scene")
+        folder = self.new_folder(name)
+        if source:
+            earlier = self.get(source)
+            if earlier.kind != "scene":
+                raise ValueError(f"{source} is not a scene")
+            for part in ("props", "ground"):
+                if (earlier.folder / part).is_dir():
+                    shutil.copytree(earlier.folder / part, folder / part)
+        job = Job(folder, name, settings=settings or Settings(kind="prop"), source=source)
+        job.kind, job.scene, job.description = "scene", dict(spec, name=name) if spec else None, description
+        job.plans = not spec
+        job.llm = llm
+        (folder / "scene.json").write_text(json.dumps(job.scene or {"name": name}, indent=2))
+        return self._enqueue(job)
+
+    def _resolve_uploads(self, spec: dict) -> dict:
+        def resolve(value):
+            if isinstance(value, str) and value.startswith("upload:"):
+                return str(self.upload_path(value[len("upload:"):]))
+            return value
+
+        spec = json.loads(json.dumps(spec))
+        for o in spec.get("objects", []) if isinstance(spec.get("objects"), list) else []:
+            if isinstance(o, dict):
+                for key in ("image", "ply", "reference", "asset"):
+                    o[key] = resolve(o.get(key)) if o.get(key) else o.get(key)
+        if isinstance(spec.get("ground"), dict) and spec["ground"].get("texture"):
+            spec["ground"]["texture"] = resolve(spec["ground"]["texture"])
+        if spec.get("concept"):
+            spec["concept"] = resolve(spec["concept"])
+        return {k: v for k, v in spec.items()}
+
     def continue_job(self, source_id: str, start: str, settings: Settings | None = None) -> Job:
         """A new job that keeps ``source_id``'s results before ``start`` and runs the rest."""
         source = self.get(source_id)
+        if source.kind == "scene":
+            raise ValueError("a scene is rebuilt with POST /api/v1/scenes and \"from\": its earlier objects are "
+                             "reused")
         allowed = [s for s in kind_stages(source.kind) if s not in ("image", "generate")]
         if start not in allowed:
             raise ValueError(f"continue a {source.kind} from one of {', '.join(allowed)} (not {start!r})")
@@ -494,6 +580,8 @@ class JobManager:
                 self.free.put(device)
 
     def _run(self, job: Job, device: str) -> None:
+        if job.kind == "scene":
+            return self._run_scene(job, device)
         o = job.options
         if o.device in ("auto", "", None):
             o = replace(o, device=device)
@@ -513,6 +601,43 @@ class JobManager:
         finally:
             if job.stage and job.stages.get(job.stage) == "running":
                 job.on_stage(job.stage, "cancelled" if job.status == "cancelled" else "failed")
+            job.update(finished=time.time())
+            job.log(f"{job.status}" + (f": {job.error}" if job.error else ""))
+
+    def _run_scene(self, job: Job, device: str) -> None:
+        from .scene import SpecError, parse
+        from .scene.build import build
+
+        settings = job.settings or Settings()
+        device = settings.device if settings.device not in ("auto", "", None) else device
+        job.update(status="running", started=time.time())
+        job.log(f"running on {device}")
+        try:
+            if job.scene is None:
+                from .scene.plan import plan
+
+                job.on_stage("plan", "running")
+                url, model = job.llm
+                try:
+                    job.scene = dict(plan(job.description, url, model, log=job.log), name=job.name)
+                except BaseException:
+                    job.on_stage("plan", "failed")
+                    raise
+                (job.folder / "scene.json").write_text(json.dumps(job.scene, indent=2))
+                job.on_stage("plan", "done")
+            build(parse(job.scene), job.folder, [device], self.image_spec, log=job.log, cancel=job.cancel_event,
+                  on_stage=job.on_stage, mesh_args=["--target_faces", str(int(settings.faces)), "--texture_size",
+                                                    str(int(settings.texture)), "--resolution",
+                                                    str(int(settings.voxels))],
+                  idol_steps=int(settings.idol_steps))
+            job.update(status="done", stage=None)
+        except Cancelled as e:
+            job.update(status="cancelled", error=str(e))
+        except (SystemExit, SpecError) as e:
+            job.update(status="failed", error=str(e))
+        except Exception as e:
+            job.update(status="failed", error=f"{type(e).__name__}: {e}")
+        finally:
             job.update(finished=time.time())
             job.log(f"{job.status}" + (f": {job.error}" if job.error else ""))
 
@@ -561,6 +686,30 @@ class ContinueRequest(BaseModel):
     motions: list[str] | None = None
     height: float | None = None
     settings: dict | None = None
+
+
+class LanguageModel(BaseModel):
+    base_url: str | None = Field(None, description="OpenAI-compatible endpoint, e.g. http://127.0.0.1:8080/v1")
+    model: str | None = None
+
+
+class SceneRequest(BaseModel):
+    spec: dict | None = Field(None, description="A scene spec (GET /scenes/example; schema/scene-spec.schema.json). "
+                                                "Files can be named \"upload:<id>\" from POST /uploads.")
+    prompt: str | None = Field(None, description="Or describe the scene; a language model plans the spec.",
+                               examples=["a forest camp at dusk with a tent, a campfire and logs to sit on"])
+    name: str | None = None
+    source: str | None = Field(None, alias="from", description="An earlier scene's job id: its finished objects "
+                                                               "and ground are reused where the spec still asks "
+                                                               "for them.")
+    settings: dict | None = Field(None, description="Any of: device, faces, texture, voxels, idol_steps")
+    llm: LanguageModel | None = None
+
+
+class PlanRequest(BaseModel):
+    prompt: str
+    size: float | None = Field(None, description="Ground size in metres (default: the model decides)")
+    llm: LanguageModel | None = None
 
 
 class ImagesRequest(BaseModel):
@@ -688,6 +837,48 @@ def create_api(manager: JobManager, token: str | None = None):
             raise HTTPException(422, str(e))
         return job.to_dict()
 
+    def llm_of(given: LanguageModel | None):
+        url, model = manager.llm
+        if given is not None:
+            url, model = given.base_url or url, given.model or model
+        return url, model
+
+    @router.get("/scenes/example", summary="An example scene spec to start from")
+    def scene_example():
+        from .scene.plan import EXAMPLE
+
+        return EXAMPLE
+
+    @router.post("/scenes/plan", summary="A scene spec from a description, written by the language model")
+    def scene_plan(req: PlanRequest):
+        from .scene import SpecError
+        from .scene.plan import plan
+
+        url, model = llm_of(req.llm)
+        if not url:
+            raise HTTPException(422, "no language model: start the server with --llm-base-url or send llm.base_url")
+        try:
+            return plan(req.prompt, url, model, req.size, log=lambda *_: None)
+        except SpecError as e:
+            raise HTTPException(422, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"language model failed: {e}")
+
+    @router.post("/scenes", status_code=202, summary="Build a scene from a spec (or a description) -> job")
+    def create_scene(req: SceneRequest):
+        try:
+            s = Settings.parse({**(req.settings or {}), "kind": "prop"})
+        except (TypeError, ValueError) as e:
+            raise HTTPException(422, str(e))
+        try:
+            job = manager.submit_scene(spec=req.spec, description=req.prompt, name=req.name, source=req.source,
+                                       settings=s, llm=llm_of(req.llm))
+        except KeyError as e:
+            raise HTTPException(404, f"not found: {e}")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return job.to_dict()
+
     @router.get("/jobs", summary="Every job, newest first")
     def list_jobs(limit: int = Query(50, ge=1, le=1000)):
         return {"jobs": [j.to_dict(detail=False) for j in manager.list(limit)]}
@@ -776,8 +967,8 @@ def create_api(manager: JobManager, token: str | None = None):
         job = job_or_404(job_id)
         if engine not in ENGINES:
             raise HTTPException(404, f"engine is one of {', '.join(ENGINES)}")
-        if not (job.folder / f"{job.name}.glb").exists():
-            raise HTTPException(409, "the character is not finished")
+        if not (job.folder / f"{job.name}.glb").exists() or job.active:
+            raise HTTPException(409, f"the {job.kind} is not finished")
         exports = job.folder / "exports"
         exports.mkdir(exist_ok=True)
         path = export_zip(job.folder / f"{job.name}.glb", engine, exports / f"{job.name}-{engine}.zip")
@@ -831,6 +1022,9 @@ def main(argv=None) -> None:
     ap.add_argument("--image-command", default=None, help='command: e.g. "sd-cli -p {prompt} -o {out}"')
     ap.add_argument("--image-keep-loaded", action="store_true",
                     help="sdcpp: leave sd-server's model loaded after each picture (default: unload it)")
+    ap.add_argument("--llm-base-url", default=os.environ.get("ASSETGEN_LLM_URL"),
+                    help="OpenAI-compatible endpoint that plans scenes from a description (or ASSETGEN_LLM_URL)")
+    ap.add_argument("--llm-model", default=os.environ.get("ASSETGEN_LLM_MODEL", "local"))
     ap.add_argument("--log-file", default=None, help="write the server's output here instead of the console")
     a = ap.parse_args(argv)
     if a.log_file:
@@ -844,7 +1038,7 @@ def main(argv=None) -> None:
                               height=height, steps=a.image_steps, workflow=a.comfy_workflow, command=a.image_command,
                               keep_loaded=True if a.image_keep_loaded else None)
     devices = [d.strip() for d in a.devices.split(",")] if a.devices else None
-    manager = JobManager(Path(a.out).resolve() if a.out else OUT_ROOT, devices, spec)
+    manager = JobManager(Path(a.out).resolve() if a.out else OUT_ROOT, devices, spec, (a.llm_base_url, a.llm_model))
     if a.host not in ("127.0.0.1", "localhost", "::1") and not a.token:
         print("warning: listening beyond localhost without --token; anyone who can reach it can run jobs")
     app = create_app(manager, a.token, ui=not a.no_ui)

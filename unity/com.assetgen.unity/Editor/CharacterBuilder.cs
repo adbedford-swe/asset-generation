@@ -184,7 +184,7 @@ namespace Assetgen.Editor
         }
     }
 
-    /// <summary>Builds a character, prop or diorama once both its model and its .assetgen file have imported.</summary>
+    /// <summary>Builds a character, prop, diorama or scene once both its model and its .assetgen file have imported.</summary>
     sealed class CharacterPostprocessor : AssetPostprocessor
     {
         static readonly HashSet<string> s_Pending = new HashSet<string>();
@@ -218,22 +218,14 @@ namespace Assetgen.Editor
             s_Pending.Clear();
             foreach (var path in paths)
             {
-                var definition = AssetDatabase.LoadAssetAtPath<CharacterDefinition>(path);
-                var prop = definition == null ? AssetDatabase.LoadAssetAtPath<PropDefinition>(path) : null;
-                if (definition == null && prop == null)
+                var model = CharacterImport.ModelPathOf(path);
+                if (model == null || CharacterImport.IsUpToDate(path))
                     continue;
-                if (prop != null ? PropBuilder.IsUpToDate(path) : CharacterBuilder.IsUpToDate(path))
-                    continue;
-                var model = prop != null ? PropBuilder.ModelPath(path, prop) : CharacterBuilder.ModelPath(path, definition);
                 if (AssetDatabase.LoadAssetAtPath<GameObject>(model) == null)
                     continue; // the model's own import brings us back here
                 try
                 {
-                    if (prop != null)
-                        PropBuilder.Build(path);
-                    else
-                        CharacterBuilder.Build(path);
-                    Debug.Log($"Assetgen: built {(prop != null ? PropBuilder.PrefabPath(path) : CharacterBuilder.PrefabPath(path))}");
+                    Debug.Log($"Assetgen: built {AssetDatabase.GetAssetPath(CharacterImport.BuildPrefab(path))}");
                 }
                 catch (Exception e)
                 {

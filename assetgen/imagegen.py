@@ -54,8 +54,8 @@ STYLES = {
     "concept": ("{prompt}, game environment concept art, seen from an elevated three-quarter view, the whole area "
                 "in frame, every object whole and clearly separated from the others, open ground between them, "
                 "soft even daylight, 3D game environment render"),
-    "texture": ("{prompt}, seamless tileable texture, flat top-down view of the surface, even diffuse lighting, "
-                "no shadows, no perspective, game texture"),
+    "texture": ("{prompt}, the ground seen from directly above, the surface filling the whole picture, natural "
+                "detail at an even scale, even diffuse lighting, game terrain texture"),
 }
 NEGATIVES = {
     "character": NEGATIVE,
@@ -64,7 +64,8 @@ NEGATIVES = {
     "diorama": "cropped, cut off, out of frame, close-up, text, watermark, logo, border, picture frame, blurry, lowres",
     "concept": ("people, characters, crowd, fog, haze, close-up, cropped objects, overlapping objects, text, "
                 "watermark, logo, border, blurry, lowres"),
-    "texture": "perspective, horizon, objects, shadows, vignette, seams, border, text, watermark, logo, blurry, lowres",
+    "texture": ("perspective, horizon, sky, objects, fabric, cloth, woven, knitted, stripes, grid, shadows, vignette, "
+                "border, text, watermark, logo, blurry, lowres"),
 }
 DEFAULT_URLS = {"sdcpp": "http://127.0.0.1:1234", "a1111": "http://127.0.0.1:7860",
                 "openai": "https://api.openai.com/v1", "comfyui": "http://127.0.0.1:8188"}

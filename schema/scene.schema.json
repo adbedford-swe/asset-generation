@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/adbedford-swe/asset-generation/main/schema/scene.schema.json",
+  "title": "assetgen scene",
+  "description": "Describes a generated scene's glTF (<name>.glb beside this <name>.assetgen file): the ground, the kinds of object in it (each also exported on its own under assets/), and every placement, so an engine can give each node its collider or rebuild the scene from the props.",
+  "type": "object",
+  "required": ["format", "version", "name", "model", "ground", "objects", "instances"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "format": {"const": "assetgen.scene"},
+    "version": {"const": 1},
+    "name": {"type": "string"},
+    "generator": {"type": "object", "properties": {"name": {"type": "string"}, "version": {"type": "string"}}},
+    "model": {
+      "type": "object",
+      "required": ["file", "units", "up", "forward", "size"],
+      "properties": {
+        "file": {"type": "string"},
+        "units": {"const": "meters"},
+        "up": {"const": "+Y"},
+        "forward": {"const": "+Z"},
+        "size": {"$ref": "#/$defs/vec2", "description": "The ground's width (x) and depth (z), centred on the origin."}
+      }
+    },
+    "style": {"type": "string"},
+    "ground": {
+      "type": "object",
+      "required": ["node", "size", "collider"],
+      "properties": {
+        "node": {"type": "string", "description": "The ground's node in the glTF."},
+        "size": {"$ref": "#/$defs/vec2"},
+        "collider": {"const": "mesh"},
+        "height_range": {"$ref": "#/$defs/vec2"},
+        "texture": {"type": ["string", "null"]},
+        "tile": {"type": "number", "description": "Metres covered by one repeat of the ground texture."}
+      }
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "file", "asset", "height", "collider", "count"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"enum": ["prop", "diorama"]},
+          "file": {"type": "string", "description": "The object on its own, relative to this file."},
+          "asset": {"type": "string", "description": "Its prop file (format assetgen.prop)."},
+          "height": {"type": "number"},
+          "collider": {"enum": ["convex", "box", "mesh", "none"]},
+          "box": {"type": "object", "description": "The object's collider box at its own scale, glTF axes.",
+                  "properties": {"center": {"$ref": "#/$defs/vec3"}, "size": {"$ref": "#/$defs/vec3"}}},
+          "footprint": {"type": "object", "properties": {"radius": {"type": "number"}, "base_radius": {"type": "number"}}},
+          "count": {"type": "integer"},
+          "prompt": {"type": "string"},
+          "look": {"type": "object", "description": "The object's measured look before harmonizing."}
+        }
+      }
+    },
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object", "node", "position", "rotation", "scale"],
+        "properties": {
+          "object": {"type": "string"},
+          "node": {"type": "string", "description": "The placement's node in the glTF: <object>_<k>."},
+          "position": {"$ref": "#/$defs/vec3"},
+          "rotation": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4,
+                       "description": "Quaternion (x, y, z, w), glTF axes."},
+          "yaw": {"type": "number"},
+          "scale": {"type": "number"},
+          "placed": {"type": "boolean", "description": "Placed by hand (else scattered)."}
+        }
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "source": {"type": "object"},
+    "preview": {"type": "string"}
+  },
+  "$defs": {
+    "vec2": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+  }
+}

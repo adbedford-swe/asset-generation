@@ -57,7 +57,53 @@ def test_props_import_with_their_colliders(tmp_path):
         folder = export.install(glb, "godot", project, log=lambda *_: None)
         paths.append(f"res://{(folder / glb.name).relative_to(project).as_posix()}")
     report = run_check(project, "test_prop.gd", *paths)
-    for line in ("crate's collision shape is a ConvexPolygonShape3D", "ruin's collision shape is a ConcavePolygonShape3D",
+    for line in ("crate's collision shape is a ConvexPolygonShape3D",
+                 "ruin's collision shape is a ConcavePolygonShape3D",
                  "block's collision shape is a BoxShape3D", "ghost has no collider", "crate sits on y = 0"):
         assert any(line in r for r in report), line
     assert sum("a ray from above lands on its top" in r for r in report) == 3
+
+
+@pytest.mark.skipif(not GODOT, reason="set ASSETGEN_GODOT to a Godot 4 binary")
+def test_scenes_import_with_a_collider_per_placement(tmp_path):
+    from assetgen.scene import parse
+    from assetgen.scene.build import build
+
+    def asset(name, parts):
+        v, f = [], []
+        for lo, hi in parts:
+            bv, bf = box(lo, hi)
+            f += [[a + len(v), b + len(v), c + len(v)] for a, b, c in bf]
+            v += bv
+        export_glb(textured(v, f), tmp_path / f"{name}.glb")
+        return str(tmp_path / f"{name}.glb")
+
+    # One object per collider type: convex (the default for props), box, none, and mesh (a diorama's default).
+    spec = parse({"name": "camp", "seed": 3, "ground": {"size": [24, 20], "relief": 1.0},
+                  "objects": [{"id": "campfire", "asset": asset("fire", [((-.4, 0, -.4), (.4, .3, .4))]),
+                               "height": 0.4, "place": [[0, 0]]},
+                              {"id": "pine",
+                               "asset": asset("tree", [((-.1, 0, -.1), (.1, 2, .1)), ((-1, 2, -1), (1, 5, 1))]),
+                               "height": 6, "collider": "box", "scatter": {"count": 4}},
+                              {"id": "rock", "asset": asset("rock", [((-.5, 0, -.4), (.5, .6, .4))]),
+                               "height": 0.6, "collider": "none", "scatter": {"count": 3}},
+                              {"id": "ruin", "kind": "diorama", "height": 2,
+                               "asset": asset("ruin", [((-2, 0, -2), (2, .5, 2)), ((-.3, .5, -.3), (.3, 2, .3))]),
+                               "place": [[-6, 5]]}]})
+    out = build(spec, tmp_path / "out", devices=["cpu"], log=lambda *_: None).parent
+    project = godot_project(tmp_path / "game")
+    folder = export.install(out, "godot", project, log=lambda *_: None)
+    scene = f"res://{(folder / 'camp.glb').relative_to(project).as_posix()}"
+    report = run_check(project, "test_scene.gd", scene)
+    for line in ("the ground has a trimesh shape", "campfire: every placement has a ConvexPolygonShape3D",
+                 "pine: every placement has a BoxShape3D", "rock: every placement has no collider",
+                 "ruin: every placement has a ConcavePolygonShape3D", "a ray from above lands on the ground",
+                 "a ray from above lands on a campfire", "a ray from above lands on a pine",
+                 "a ray from above lands on a ruin"):
+        assert any(line in r for r in report), line
+
+    # The objects come along as props of their own.
+    props = [f"res://{p.relative_to(project).as_posix()}" for p in sorted((folder / "assets").glob("*.glb"))]
+    assert len(props) == 4
+    report = run_check(project, "test_prop.gd", *props)
+    assert sum("the root is an AssetgenProp" in r for r in report) == 4

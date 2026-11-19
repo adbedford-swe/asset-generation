@@ -37,7 +37,7 @@ def load_textured_glb(path) -> TexturedMesh:
         vertices=np.asarray(m.vertices, dtype=np.float32),
         faces=np.asarray(m.faces, dtype=np.int32),
         uvs=np.stack([uv[:, 0], 1 - uv[:, 1]], axis=1),  # trimesh flips v on load; back to glTF
-        texture=np.asarray(image.convert("RGB")),
+        texture=np.array(image.convert("RGB")),
     )
 
 

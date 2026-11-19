@@ -1,5 +1,5 @@
-"""Browser front end: describe or upload a character, a prop or a diorama, watch every stage, take it
-to an engine.
+"""Browser front end: describe or upload a character, a prop or a diorama, or lay out a whole scene;
+watch every stage, take it to an engine.
 
 Served by ``assetgen serve`` (or ``python server.py``) next to the HTTP API, on the
 same job queue: a job started here shows up in the API and the Unity window, and
@@ -11,6 +11,7 @@ started from is never changed.
 from __future__ import annotations
 
 import html
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -28,7 +29,8 @@ EMPTY_VIEWER = ('<div style="height:520px;display:flex;align-items:center;justif
 STAGE_LABELS = {"mesh": "Mesh (re-mesh the splat)", "rig": "Rig (keep the mesh)",
                 "animate": "Motion (keep mesh and rig)", "finalize": "Finalize (re-assemble the clips)"}
 STAGE_NAMES = {"image": "Image", "generate": "Splat", "mesh": "Mesh", "rig": "Rig", "animate": "Motion",
-               "finalize": "Finalize"}
+               "finalize": "Finalize", "plan": "Plan", "props": "Objects", "ground": "Ground", "layout": "Layout",
+               "assemble": "Assemble"}
 CSS = """
 .stage-strip {display:flex; gap:6px; flex-wrap:wrap; margin:2px 0 6px}
 .stage-strip span {padding:3px 10px; border-radius:999px; font-size:12px; background:#2a2a31; color:#9a9aa5}
@@ -58,6 +60,12 @@ def clip_names(glb: Path) -> list[str]:
 
 
 def stage_images(out: Path, name: str, kind: str = "character") -> list[tuple[str, str]]:
+    if kind == "scene":
+        shots = [(out / f"{name}.png", "The scene"), (out / "ground" / "texture.png", "Ground texture")]
+        shots += [(p, f"{p.stem}") for p in sorted((out / "assets").glob("*.png"))]
+        if not (out / "assets").is_dir():  # still making the objects: show their pictures as they come
+            shots += [(p, p.parent.parent.name) for p in sorted((out / "props").glob("*/0_image/image.png"))]
+        return [(str(p), caption) for p, caption in shots if p.exists()]
     candidates = [
         (out / "0_image" / "image.png", "Generated image"),
         (out / "1_mesh" / "front.png", "Mesh, front view (should face you)"),
@@ -91,11 +99,26 @@ def prop_markdown(data: dict) -> str:
     return "\n\n".join(lines)
 
 
+def scene_markdown(data: dict) -> str:
+    width, depth = data["model"]["size"]
+    rows = ["| Object | Placed | Height | Collider |", "|---|---|---|---|"]
+    for o in data.get("objects", []):
+        rows.append(f"| `{o['id']}` | {o['count']} | {o['height']:.2f} m | {o['collider']} |")
+    lines = [f"**{data['name']}**: {len(data.get('instances', []))} objects on {width:g} x {depth:g} m", "", *rows]
+    if data.get("style"):
+        lines.insert(1, f"*{html.escape(data['style'])}*")
+    for w in data.get("warnings", []):
+        lines += ["", f"⚠ {html.escape(w)}"]
+    return "\n".join(lines)
+
+
 def character_markdown(data: dict | None) -> str:
     if not data:
         return ""
     if data.get("format") == "assetgen.prop":
         return prop_markdown(data)
+    if data.get("format") == "assetgen.scene":
+        return scene_markdown(data)
     model = data.get("model", {})
     rows = ["| Clip | Role | Loop | Length | Speed |", "|---|---|---|---|---|"]
     for c in data.get("clips", []):
@@ -240,6 +263,48 @@ def build(manager: JobManager | None = None):
             raise gr.Error(str(e))
         yield from follow(job)
 
+    def scene_example():
+        from .scene.plan import EXAMPLE
+
+        return json.dumps(EXAMPLE, indent=2)
+
+    def plan_scene(description, url, model):
+        from .scene import SpecError
+        from .scene.plan import plan
+
+        if not (description or "").strip():
+            raise gr.Error("Describe the scene first.")
+        url = (url or "").strip() or manager.llm[0]
+        if not url:
+            raise gr.Error("Planning needs a language model: an OpenAI-compatible endpoint, such as llama.cpp's "
+                           "server at http://127.0.0.1:8080/v1.")
+        try:
+            return json.dumps(plan(description.strip(), url, (model or "").strip() or manager.llm[1],
+                                   log=lambda *_: None), indent=2)
+        except SpecError as e:
+            raise gr.Error(str(e))
+        except Exception as e:
+            raise gr.Error(f"The language model failed: {e}")
+
+    def start_scene(spec_text, description, reuse, shown, *rest):
+        try:
+            spec = json.loads(spec_text or "")
+        except json.JSONDecodeError as e:
+            raise gr.Error(f"The spec is not valid JSON: {e}")
+        source = None
+        if reuse and shown:
+            try:
+                source = shown if manager.get(shown).kind == "scene" else None
+            except KeyError:
+                source = None
+        s = settings(*rest)
+        try:
+            job = manager.submit_scene(spec=spec, description=(description or "").strip() or None, source=source,
+                                       settings=replace(s, kind="prop"))
+        except (ValueError, KeyError) as e:
+            raise gr.Error(str(e))
+        yield from follow(job)
+
     def show_run(job_id):
         empty = ("", [], EMPTY_VIEWER, gr.update(choices=[], value=None), None, None, "", "", "")
         if not job_id:
@@ -351,6 +416,26 @@ def build(manager: JobManager | None = None):
                     reference = gr.Image(type="filepath", label="Idol's input image (optional, for facing)",
                                          height=200)
                     go_splat = gr.Button("Generate", variant="primary")
+                with gr.Tab("Scene"):
+                    gr.Markdown("A whole environment: the objects in it, each made once as a prop, placed or "
+                                "scattered on generated ground. Plan the spec from a description, or start from the "
+                                "example and edit it. [Spec reference](https://github.com/adbedford-swe/"
+                                "asset-generation#scenes)")
+                    scene_text = gr.Textbox(label="Describe the scene", lines=2, max_lines=6,
+                                            placeholder="a forest camp at dusk with a tent, a campfire and logs "
+                                                        "to sit on")
+                    with gr.Row():
+                        plan_button = gr.Button("Plan with the language model")
+                        example_button = gr.Button("Example")
+                    with gr.Accordion("Language model", open=False):
+                        llm_scene_url = gr.Textbox(value=manager.llm[0] or "", label="Endpoint", max_lines=1,
+                                                   placeholder="http://127.0.0.1:8080/v1 (llama.cpp, vLLM, Ollama, "
+                                                               "OpenAI, ...)")
+                        llm_scene_model = gr.Textbox(value=manager.llm[1] or "", label="Model", max_lines=1)
+                    scene_spec = gr.Code(language="json", label="Scene spec", lines=18, max_lines=40)
+                    reuse = gr.Checkbox(value=True, label="Reuse the objects of the scene on show",
+                                        info="Objects and ground the spec still asks for are not made again")
+                    go_scene = gr.Button("Build scene", variant="primary")
                 with gr.Tab("Continue a run"):
                     with gr.Row():
                         runs = gr.Dropdown(list_runs(manager), label="Earlier run", scale=5,
@@ -426,6 +511,9 @@ def build(manager: JobManager | None = None):
         go_image.click(start_image, [image, mode, name, *common], outputs)
         go_splat.click(start_splat, [ply, reference, name, *common], outputs)
         go_continue.click(continue_run, [runs, stage, *common], outputs)
+        example_button.click(scene_example, None, scene_spec)
+        plan_button.click(plan_scene, [scene_text, llm_scene_url, llm_scene_model], scene_spec)
+        go_scene.click(start_scene, [scene_spec, scene_text, reuse, job_state, *common], outputs)
         stop.click(cancel, job_state, None)
         backend.change(backend_status, [backend, backend_url, image_model], [backend_info, image_model])
         backend_url.blur(backend_status, [backend, backend_url, image_model], [backend_info, image_model])

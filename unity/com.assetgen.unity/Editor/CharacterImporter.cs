@@ -8,9 +8,9 @@ namespace Assetgen.Editor
 {
     /// <summary>
     /// Imports a <c>.assetgen</c> file: a character as a <see cref="CharacterDefinition"/>, a prop or
-    /// diorama as a <see cref="PropDefinition"/>.
+    /// diorama as a <see cref="PropDefinition"/>, a scene as a <see cref="SceneDefinition"/>.
     /// </summary>
-    [ScriptedImporter(2, "assetgen")]
+    [ScriptedImporter(3, "assetgen")]
     sealed class CharacterImporter : ScriptedImporter
     {
         public override void OnImportAsset(AssetImportContext ctx)
@@ -21,11 +21,18 @@ namespace Assetgen.Editor
             try
             {
                 var json = File.ReadAllText(ctx.assetPath);
-                if (FormatOf(json) == PropDefinition.Format)
+                var format = FormatOf(json);
+                if (format == PropDefinition.Format)
                 {
                     definition = PropDefinition.FromJson(json);
                     identifier = "prop";
                     icon = AssetPreview.GetMiniTypeThumbnail(typeof(MeshFilter));
+                }
+                else if (format == SceneDefinition.Format)
+                {
+                    definition = SceneDefinition.FromJson(json);
+                    identifier = "scene";
+                    icon = AssetPreview.GetMiniTypeThumbnail(typeof(SceneAsset));
                 }
                 else
                 {

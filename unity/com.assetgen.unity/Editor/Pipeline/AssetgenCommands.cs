@@ -11,8 +11,8 @@ using Unity.Pipeline.Commands;
 namespace Assetgen.Editor
 {
     /// <summary>
-    /// <c>unity command assetgen ...</c>: generate characters, props and dioramas, import them and put
-    /// them in scenes from the Unity CLI, or from an agent through <c>unity mcp</c> (each command is the
+    /// <c>unity command assetgen ...</c>: generate characters, props, dioramas and whole scenes, import them
+    /// and put them in Unity scenes from the Unity CLI, or from an agent through <c>unity mcp</c> (each command is the
     /// tool <c>assetgen_&lt;name&gt;</c>). Compiled only when com.unity.pipeline is in the project.
     /// </summary>
     static class AssetgenCommands
@@ -20,7 +20,7 @@ namespace Assetgen.Editor
         const string Group = "assetgen";
         const string ServerGroup = "assetgen.server";
 
-        [CliGroupCommand(Group, "The assetgen server this project talks to, and the characters and props already in the project.",
+        [CliGroupCommand(Group, "The assetgen server this project talks to, and the characters, props and scenes already in the project.",
             Effect = CommandEffect.ReadOnly)]
         internal static async Task<ExitCode> Status(CommandContext cmd)
         {
@@ -50,6 +50,8 @@ namespace Assetgen.Editor
                 characters = CharacterImport.All().Count(),
                 propsFolder = AssetgenSettings.instance.propsFolder,
                 props = CharacterImport.AllProps().Count(),
+                environmentsFolder = AssetgenSettings.instance.environmentsFolder,
+                scenes = CharacterImport.AllScenes().Count(),
                 pendingJobs = JobTracker.Pending,
                 serverStartedByEditor = AssetgenServer.Owned,
             });
@@ -142,6 +144,67 @@ namespace Assetgen.Editor
             return await Finish(cmd, client, job.id);
         }
 
+        [CliGroupCommand(Group,
+            "Build a whole scene: every object made as a prop and laid out on a generated ground, imported as one static " +
+            "prefab with its colliders (its objects as props of their own). From --prompt (the server's language model " +
+            "plans it) or --spec (a scene spec). Returns the job id at once; with --wait, waits and returns the prefab " +
+            "(each object takes minutes: run with --timeout 3600, or --detach and 'unity job wait').",
+            Effect = CommandEffect.Additive, Tags = new[] { "assets/import" })]
+        internal static async Task<ExitCode> Scene(
+            CommandContext cmd,
+            [CliArg("prompt", "The scene, e.g. \"a forest camp at dusk with a tent and a campfire\". Needs a server started with a language model.")]
+            string prompt = "",
+            [CliArg("spec", "A scene spec (schema/scene-spec.schema.json): a .json file, or the JSON itself")] string spec = "",
+            [CliArg("name", "Scene name (default: the spec's, or from the description)")] string name = "",
+            [CliArg("from", "An earlier scene's job id: its finished objects and ground are reused where the new scene asks for them")]
+            string source = "",
+            [CliArg("wait", "Wait for the scene and import it before returning")] bool wait = false)
+        {
+            if (string.IsNullOrWhiteSpace(prompt) && string.IsNullOrWhiteSpace(spec))
+            {
+                cmd.Log.Error("Give --prompt (a description) or --spec (a scene spec).");
+                return ExitCode.InvalidUsage;
+            }
+            string specJson = null;
+            if (!string.IsNullOrWhiteSpace(spec))
+            {
+                specJson = spec.TrimStart().StartsWith("{", StringComparison.Ordinal) ? spec
+                    : File.Exists(spec) ? File.ReadAllText(spec) : null;
+                if (specJson == null)
+                {
+                    cmd.Log.Error($"No scene spec at {spec}.");
+                    return ExitCode.NotFound;
+                }
+            }
+            var request = new SceneRequest
+            {
+                prompt = prompt.Trim(),
+                name = name.Trim(),
+                @from = source.Trim(),
+                settings = AssetgenSettings.instance.generation.ToScene(),
+            };
+
+            var client = new AssetgenClient();
+            if (!AssetgenServer.Owned || !await Answers(client, cmd))
+            {
+                cmd.Log.Info("Making sure the assetgen server is running.");
+                await AssetgenServer.EnsureRunningAsync(cmd.CancellationToken);
+            }
+            var job = await client.SubmitSceneAsync(request, specJson, cmd.CancellationToken);
+            cmd.Log.Info($"Started {job.id}.");
+            if (!wait)
+            {
+                JobTracker.Track(job.id);
+                cmd.Result.Write(new
+                {
+                    job = job.id, status = job.status, server = client.BaseUrl,
+                    next = $"unity command assetgen wait --id {job.id}",
+                });
+                return ExitCode.Success;
+            }
+            return await Finish(cmd, client, job.id);
+        }
+
         [CliGroupCommand(Group, "The text-to-image models the server's image backend can load (for --image-model).",
             Effect = CommandEffect.ReadOnly)]
         internal static async Task<ExitCode> ImageModels(CommandContext cmd)
@@ -198,8 +261,9 @@ namespace Assetgen.Editor
         }
 
         [CliGroupCommand(Group,
-            "Import a character, prop or diorama: a finished job id, or a path to an export zip, a folder, or a " +
-            ".glb/.assetgen pair. Builds its prefab (and a character's Animator Controller) and returns the prefab.",
+            "Import a character, prop, diorama or scene: a finished job id, or a path to an export zip, a folder, or a " +
+            ".glb/.assetgen pair. Builds its prefab (and a character's Animator Controller, a scene's object props) and " +
+            "returns the prefab.",
             Effect = CommandEffect.Additive, Tags = new[] { "assets/import" })]
         internal static async Task<ExitCode> Import(
             CommandContext cmd,
@@ -215,16 +279,16 @@ namespace Assetgen.Editor
             return ExitCode.Success;
         }
 
-        [CliGroupCommand(Group, "Rebuild a character's prefab and Animator Controller, or a prop's prefab, from its .glb and .assetgen.",
+        [CliGroupCommand(Group, "Rebuild a character's prefab and Animator Controller, or a prop's or scene's prefab, from its .glb and .assetgen.",
             Effect = CommandEffect.Idempotent)]
         internal static ExitCode Build(
             CommandContext cmd,
-            [CliArg("character", "Character or prop name, or the path of its .assetgen file", Required = true)] string character)
+            [CliArg("character", "Character, prop or scene name, or the path of its .assetgen file", Required = true)] string character)
         {
             var path = ResolveCharacter(character);
             if (path == null)
             {
-                cmd.Log.Error($"No character or prop '{character}' in the project (see: unity command assetgen list).");
+                cmd.Log.Error($"No character, prop or scene '{character}' in the project (see: unity command assetgen list).");
                 return ExitCode.NotFound;
             }
             var prefab = AssetDatabase.GetAssetPath(CharacterImport.BuildPrefab(path));
@@ -232,7 +296,8 @@ namespace Assetgen.Editor
             return ExitCode.Success;
         }
 
-        [CliGroupCommand(Group, "Every character in the project, with its prefab and clips, and every prop and diorama, with its kind and size.",
+        [CliGroupCommand(Group, "Every character in the project, with its prefab and clips; every prop and diorama, with its kind and " +
+                                "size; every scene, with its objects.",
             Effect = CommandEffect.ReadOnly)]
         internal static ExitCode List(CommandContext cmd)
         {
@@ -264,14 +329,28 @@ namespace Assetgen.Editor
                     footprintRadius = definition.footprintRadius,
                 });
             }
+            foreach (var (path, definition) in CharacterImport.AllScenes())
+            {
+                var prefab = SceneBuilder.PrefabPath(path);
+                cmd.Result.WriteRecord(new
+                {
+                    name = definition.name,
+                    kind = "scene",
+                    path,
+                    prefab = File.Exists(prefab) ? prefab : null,
+                    size = new[] { definition.size.x, definition.size.y },
+                    objects = definition.objects.Select(o => o.id).ToArray(),
+                    placements = definition.instances.Count,
+                });
+            }
             return ExitCode.Success;
         }
 
-        [CliGroupCommand(Group, "Put a character, prop or diorama in the open scene. Returns the new GameObject.",
+        [CliGroupCommand(Group, "Put a character, prop, diorama or generated scene in the open Unity scene. Returns the new GameObject.",
             Effect = CommandEffect.Additive, Tags = new[] { "gameobjects", "prefabs" })]
         internal static ExitCode Spawn(
             CommandContext cmd,
-            [CliArg("character", "Character or prop name, .assetgen path or prefab path", Required = true)] string character,
+            [CliArg("character", "Character, prop or scene name, .assetgen path or prefab path", Required = true)] string character,
             [CliArg("position", "World position as x,y,z")] string position = "",
             [CliArg("speed", "Ground speed in m/s: 0 stands, the walk or run speed moves the feet at their pace")] float speed = 0f,
             [CliArg("move-forward", "Move forward at that speed in Play mode")] bool moveForward = false)
@@ -471,6 +550,27 @@ namespace Assetgen.Editor
         static void WriteCharacter(CommandContext cmd, string job, string prefabPath)
         {
             var definitionPath = Path.ChangeExtension(prefabPath, ".assetgen");
+            var scene = AssetDatabase.LoadAssetAtPath<SceneDefinition>(definitionPath);
+            if (scene != null)
+            {
+                var folder = Path.GetDirectoryName(definitionPath)?.Replace('\\', '/');
+                cmd.Result.Write(new
+                {
+                    job,
+                    prefab = prefabPath,
+                    name = scene.name,
+                    kind = "scene",
+                    size = new[] { scene.size.x, scene.size.y },
+                    objects = scene.objects.Select(o => new
+                    {
+                        o.id, o.kind, o.count, o.height, collider = o.colliderType.ToString().ToLowerInvariant(),
+                        prefab = string.IsNullOrEmpty(o.asset) ? null : PropBuilder.PrefabPath($"{folder}/{o.asset}"),
+                    }).ToArray(),
+                    placements = scene.instances.Count,
+                    next = $"unity command assetgen spawn --character \"{prefabPath}\"",
+                });
+                return;
+            }
             var prop = AssetDatabase.LoadAssetAtPath<PropDefinition>(definitionPath);
             if (prop != null)
             {
@@ -502,7 +602,7 @@ namespace Assetgen.Editor
             });
         }
 
-        /// <summary>The .assetgen path of a character, prop or diorama, by name or path.</summary>
+        /// <summary>The .assetgen path of a character, prop, diorama or scene, by name or path.</summary>
         static string ResolveCharacter(string character)
         {
             if (character.EndsWith(".assetgen", StringComparison.OrdinalIgnoreCase) && File.Exists(character))
@@ -510,7 +610,9 @@ namespace Assetgen.Editor
             return CharacterImport.All().Where(c => c.definition.name == character || c.definition.characterName == character)
                        .Select(c => c.path).FirstOrDefault()
                    ?? CharacterImport.AllProps().Where(p => p.definition.name == character || p.definition.propName == character)
-                       .Select(p => p.path).FirstOrDefault();
+                       .Select(p => p.path).FirstOrDefault()
+                   ?? CharacterImport.AllScenes().Where(s => s.definition.name == character || s.definition.sceneName == character)
+                       .Select(s => s.path).FirstOrDefault();
         }
     }
 }

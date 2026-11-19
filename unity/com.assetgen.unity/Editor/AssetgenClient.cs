@@ -31,6 +31,13 @@ namespace Assetgen.Editor
         public Task<JobInfo> SubmitAsync(JobRequest request, CancellationToken ct = default) =>
             SendJsonAsync<JobInfo>(HttpMethod.Post, "jobs", JsonUtility.ToJson(request), ct);
 
+        /// <summary>
+        /// Starts a scene: planned from the request's prompt by the server's language model, or built from
+        /// <paramref name="specJson"/> (a scene spec, as JSON) when given.
+        /// </summary>
+        public Task<JobInfo> SubmitSceneAsync(SceneRequest request, string specJson = null, CancellationToken ct = default) =>
+            SendJsonAsync<JobInfo>(HttpMethod.Post, "scenes", request.ToJson(specJson), ct);
+
         public Task<JobInfo> JobAsync(string id, CancellationToken ct = default) =>
             GetJsonAsync<JobInfo>($"jobs/{Uri.EscapeDataString(id)}", ct, 15);
 
@@ -40,7 +47,7 @@ namespace Assetgen.Editor
         public Task<JobInfo> CancelAsync(string id, CancellationToken ct = default) =>
             SendJsonAsync<JobInfo>(HttpMethod.Post, $"jobs/{Uri.EscapeDataString(id)}/cancel", "{}", ct);
 
-        /// <summary>The job's asset packaged for Unity (a zip of name/name.glb, name.assetgen, ...).</summary>
+        /// <summary>The job's asset packaged for Unity (a zip of name/name.glb, name.assetgen, ..., and a scene's assets/).</summary>
         public Task<byte[]> ExportAsync(string id, CancellationToken ct = default) =>
             GetBytesAsync($"jobs/{Uri.EscapeDataString(id)}/export/unity", ct);
 
@@ -142,6 +149,38 @@ namespace Assetgen.Editor
         public float height = 1.8f;
         public JobSettings settings;
         public ImageBackendRequest image_backend = new ImageBackendRequest();
+    }
+
+    /// <summary>A scene job (POST /scenes). Empty fields are the server's defaults.</summary>
+    [Serializable]
+    public sealed class SceneRequest
+    {
+        public string prompt;
+        public string name;
+        /// <summary>An earlier scene's job id: its finished objects and ground are reused.</summary>
+        public string @from;
+        public SceneSettings settings = new SceneSettings();
+
+        /// <summary>The request body. JsonUtility cannot hold a free-form spec, so it is added as given.</summary>
+        public string ToJson(string specJson = null)
+        {
+            var json = JsonUtility.ToJson(this);
+            return string.IsNullOrWhiteSpace(specJson)
+                ? json
+                : json.Substring(0, json.LastIndexOf('}')) + ",\"spec\":" + specJson.Trim() + "}";
+        }
+    }
+
+    /// <summary>The server's settings a scene job takes; its objects are made as props.</summary>
+    [Serializable]
+    public sealed class SceneSettings
+    {
+        /// <summary>Empty: the server picks.</summary>
+        public string device = "";
+        public int faces = 40000;
+        public int texture = 2048;
+        public int voxels = 256;
+        public int idol_steps = 50;
     }
 
     /// <summary>Image backend overrides for one job; empty fields keep the server's.</summary>

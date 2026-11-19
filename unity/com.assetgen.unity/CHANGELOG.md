@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+- Scenes: `.assetgen` files of format `assetgen.scene` import as a `SceneDefinition` (ground, objects, placements),
+  and build `name.prefab`, a variant of the scene model with a MeshCollider on the ground, each placement's collider
+  as its object asks, everything static, and an `AssetgenScene` component mapping placements to objects. Each object
+  in the scene's `assets/` folder is built as a prop too. Scenes are imported into a new environments folder
+  (`Assets/Environments` by default).
+- Export zips keep their folders (a scene's `assets/`), still refusing paths out of the asset's folder.
+- The window has a Scene mode (a description or a spec file, and an earlier scene to reuse objects from), and lists
+  scenes in the project. `unity command assetgen scene --prompt | --spec`; `import`, `build`, `spawn`, `list`, `wait`
+  and `status` handle scenes too.
+
 ## 0.5.0
 
 - Props and dioramas: `.assetgen` files of format `assetgen.prop` import as a `PropDefinition` (kind, size, collider,

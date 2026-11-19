@@ -11,8 +11,11 @@ from .splats import Camera, Gaussians, make_camera, render
 
 
 def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_colors=None,
-                background=(1.0, 1.0, 1.0), shade: bool = True, chunk: int = 1 << 20):
-    """Z-buffered rasterization (on the GPU when there is one). Returns (rgb (H, W, 3), mask (H, W)) on CPU."""
+                background=(1.0, 1.0, 1.0), shade: bool = True, chunk: int = 1 << 20, wrap: bool = False,
+                return_depth: bool = False):
+    """Z-buffered rasterization (on the GPU when there is one). Returns (rgb (H, W, 3), mask (H, W)) on CPU,
+    and the depth along the view (inf where nothing was drawn) with ``return_depth``. ``wrap`` repeats the
+    texture for UVs outside [0, 1], as a tiling ground's are."""
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     V = torch.as_tensor(np.asarray(vertices), dtype=torch.float32, device=dev)
     Fc = torch.as_tensor(np.asarray(faces), dtype=torch.long, device=dev)
@@ -75,9 +78,12 @@ def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_col
     if texture is not None and uvs is not None:
         UV = torch.as_tensor(np.asarray(uvs), dtype=torch.float32, device=dev)
         uv = (UV[f] * w[..., None]).sum(1)
+        if wrap:
+            uv = uv.remainder(1.0)
         tex = torch.as_tensor(np.asarray(texture), dtype=torch.float32, device=dev) / 255.0
         grid = (uv * 2 - 1).view(1, 1, -1, 2)  # glTF uv: v down, matches image rows
-        col = F.grid_sample(tex.permute(2, 0, 1)[None], grid, mode="bilinear", align_corners=False)[0, :, 0].T
+        col = F.grid_sample(tex.permute(2, 0, 1)[None], grid, mode="bilinear", align_corners=False,
+                            padding_mode="border" if wrap else "zeros")[0, :, 0].T
     elif vertex_colors is not None:
         VC = torch.as_tensor(np.asarray(vertex_colors), dtype=torch.float32, device=dev)
         col = (VC[f] * w[..., None]).sum(1)
@@ -87,6 +93,8 @@ def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_col
         n = F.normalize(torch.linalg.cross(V[f[:, 1]] - V[f[:, 0]], V[f[:, 2]] - V[f[:, 0]]), dim=-1)
         col = col * (0.35 + 0.65 * (n @ R[2]).abs()[:, None])
     rgb[hit] = col
+    if return_depth:
+        return rgb.view(H, W, 3).cpu(), mask.view(H, W).float().cpu(), zbuf.view(H, W).cpu()
     return rgb.view(H, W, 3).cpu(), mask.view(H, W).float().cpu()
 
 
