@@ -5,8 +5,9 @@
     assetgen export outputs/goblin --engine godot --zip                    # goblin-godot.zip to hand over
 
 Every export is the same few files: ``<name>.glb`` (mesh, and for characters the skeleton
-and every clip), ``<name>.assetgen`` (what kind of asset it is and how to set it up), and a
-preview picture. The engine integrations do the rest on import:
+and every clip), ``<name>.assetgen`` (what kind of asset it is and how to set it up), a
+preview picture, and the sounds of clips made from video under ``sounds/``. The engine
+integrations do the rest on import:
 
   unity  the com.assetgen.unity package (in this repository's ``unity/`` folder) builds a
          prefab: for a character with an Animator Controller and a locomotion blend tree, for a
@@ -94,6 +95,10 @@ def export(source: Path, engine: str, out_dir: Path) -> Path:
         data["preview"] = f"{name}{'_clips' if data['format'] == character.FORMAT else '_preview'}.png"
         shutil.copy2(preview, folder / data["preview"])
     (folder / f"{name}{character.EXTENSION}").write_text(json.dumps(data, indent=2))
+    for clip in data.get("clips", []):
+        if clip.get("sound") and (glb.parent / clip["sound"]).exists():
+            (folder / clip["sound"]).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(glb.parent / clip["sound"], folder / clip["sound"])
     if data["format"] == "assetgen.scene" and (glb.parent / "assets").is_dir():
         shutil.copytree(glb.parent / "assets", folder / "assets", dirs_exist_ok=True)
     if engine == "godot":

@@ -1,6 +1,6 @@
 """assetgen: text or image -> rigged, animated character, prop or set piece for Unity, Godot or any glTF engine.
 
-  assetgen setup                       fetch SkinTokens, UniMate and their weights
+  assetgen setup [--capture]           fetch SkinTokens, UniMate and their weights (and CoTracker's)
   assetgen doctor                      check GPU, packages, checkouts and weights
   assetgen run --text "a goblin shaman with a lantern" --out outputs/goblin
   assetgen run --image fig.png --out outputs/fig
@@ -19,6 +19,8 @@
   assetgen export outputs/camp --engine godot --project ~/my_godot_game
   assetgen serve [--host 0.0.0.0]                       HTTP API and web UI (also: python server.py)
   assetgen synth --mesh Fox.glb --out testdata/fox      (Idol-like test input from a mesh)
+  assetgen capture clip --asset outputs/fox/2_rig/rigged.glb --prompt "An object pounces. [once]" --out clips/pounce
+  assetgen capture bench --glb Fox.glb --anim Walk --out bench/fox_walk   (score motion from video on a known clip)
 """
 from __future__ import annotations
 
@@ -45,7 +47,8 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--mode", default="synthetic", choices=["synthetic", "real"], help="Idol input type")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--prompt", nargs="+", default=[],
-                    help='motion prompts, each "An object <does one thing>."; each loops unless it ends in "[once]"')
+                    help='motion prompts, each "An object <does one thing>."; each loops unless it ends in "[once]"; '
+                         '"[video]" makes the clip from a generated video instead of UniMate')
     ap.add_argument("--loop", default="auto",
                     help="auto: loop length from each motion's own cycle (3 s without one); off; or a loop "
                          "length in frames at 30 fps, any length up to 600")
@@ -80,6 +83,16 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
                     help="send --text to the image backend as written, without the framing for its kind")
     ap.add_argument("--image-keep-loaded", action="store_true",
                     help="sdcpp: leave sd-server's model loaded after the picture (default: unload it to free the GPU)")
+    ap.add_argument("--video-backend", default=None, choices=["sdcpp", "command"],
+                    help="[video] prompts: sd-server (MiniMax-H3) or a command (default sdcpp, or "
+                         "ASSETGEN_VIDEO_BACKEND)")
+    ap.add_argument("--video-url", default=None, help="[video] prompts: sd-server's address (default: --image-url's)")
+    ap.add_argument("--video-model", default=None, help="[video] prompts: sd-server recipe (default minimax-h3-fl2va)")
+    ap.add_argument("--video-command", default=None,
+                    help="[video] prompts: a command with {prompt} {init} {end} {out} {frames} {width} {height} {seed}")
+    ap.add_argument("--video-size", default=None, help="[video] prompts: WIDTHxHEIGHT (default 640x640)")
+    ap.add_argument("--video-steps", type=int, default=None)
+    ap.add_argument("--no-video-depth", action="store_true", help="[video] prompts: fit without estimated depth")
     ap.add_argument("--from", dest="start", choices=STAGES, default=None, help="first stage to run")
     ap.add_argument("--to", dest="stop", choices=STAGES, default=None, help="last stage to run")
     ap.add_argument("--force", action="store_true", help="rerun stages that are up to date")
@@ -106,13 +119,22 @@ def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path
             mesh_args += [flag, str(value)]
     stem = (image or ply).stem if (image or ply) else re.sub(r"[^A-Za-z0-9]+", "_", text or "asset").strip("_")[:32]
     height = a.height if a.height is not None or a.kind not in STATIC_KINDS else 1.0
+    video_args = []
+    for flag, value in (("--video_backend", a.video_backend), ("--video_url", a.video_url),
+                        ("--video_model", a.video_model), ("--video_command", a.video_command),
+                        ("--video_size", a.video_size), ("--video_steps", a.video_steps)):
+        if value is not None:
+            video_args += [flag, str(value)]
+    if a.no_video_depth:
+        video_args.append("--no_video_depth")
     return Options(out=out, text=text, image_spec=image_spec(a) if text else None, image=image, ply=ply,
                    reference=reference, name=a.name or stem.replace(" ", "_"),
                    device=device, mode=a.mode, seed=a.seed, prompts=a.prompt, repetitions=a.repetitions,
                    height=height, rig_class=a.rig_class, num_beams=a.num_beams, rig_candidates=a.rig_candidates,
                    skin_postprocess=a.skin_postprocess, mesh_args=mesh_args, llm_base_url=a.llm_base_url,
                    llm_model=a.llm_model, cfg_scale=a.cfg_scale, loop=a.loop, root_motion=a.root_motion,
-                   flow_steps=a.flow_steps, idol_steps=a.idol_steps, fbx=a.fbx, kind=a.kind, collider=a.collider)
+                   flow_steps=a.flow_steps, idol_steps=a.idol_steps, fbx=a.fbx, kind=a.kind, collider=a.collider,
+                   video_args=video_args)
 
 
 def cmd_run(a) -> None:
@@ -191,7 +213,7 @@ def cmd_batch(a) -> None:
 def cmd_setup(a) -> None:
     from .thirdparty import setup
 
-    setup(weights=not a.no_weights)
+    setup(weights=not a.no_weights, capture=a.capture)
 
 
 def cmd_doctor(a) -> None:
@@ -297,6 +319,17 @@ def cmd_export(a) -> None:
         print(export(Path(a.source), a.engine, Path(a.out or "exports")))
 
 
+def cmd_capture(a) -> None:
+    if a.rest[:1] == ["bench"]:
+        from .capture.bench import main as bench
+
+        bench(a.rest[1:])
+    else:
+        from .capture.run import main as capture
+
+        capture(a.rest)
+
+
 def cmd_synth(a) -> None:
     import torch
     from PIL import Image
@@ -343,7 +376,12 @@ def main(argv=None) -> None:
 
     s = sub.add_parser("setup", help="fetch pinned SkinTokens/UniMate checkouts and model weights")
     s.add_argument("--no-weights", action="store_true")
+    s.add_argument("--capture", action="store_true", help="also CoTracker, for motion from video ([video] prompts)")
     s.set_defaults(func=cmd_setup)
+
+    cap = sub.add_parser("capture", add_help=False,
+                         help="motion from video: the start frame, one clip, or the benchmark (start|clip|bench)")
+    cap.set_defaults(func=cmd_capture)
 
     for command, text in (("serve", "HTTP API and web UI on one port (see assetgen serve --help)"),
                           ("webui", "same as serve")):
@@ -443,7 +481,7 @@ def main(argv=None) -> None:
     y.set_defaults(func=cmd_synth)
 
     a, rest = ap.parse_known_args(argv)
-    if a.cmd in ("serve", "webui"):
+    if a.cmd in ("serve", "webui", "capture"):
         a.rest = rest
     elif rest:
         ap.error(f"unrecognized arguments: {' '.join(rest)}")

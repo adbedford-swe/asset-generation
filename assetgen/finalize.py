@@ -158,6 +158,7 @@ def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, 
             extras["loop_frames"] = clip.get("loop_frames")
             extras["root_motion"] = "kept" if root_motion else "in_place"
             extras["root_velocity"] = [round(v * scale, 5) for v in velocities[anim.name]]
+        extras.update(clip_timing(clip, anim.name, out_path))
         anim.extras = extras
     info["animations"] = {a.name: a.extras for a in animations}
     base.buffers[0].byteLength = len(blob)
@@ -166,6 +167,25 @@ def merge_clips(clips: list[dict], out_path: Path, height: float | None = None, 
     base.save_binary(str(out_path))
     log(f"[finalize] {out_path}: {len(animations)} clips {info['clips']}")
     return info
+
+
+def clip_timing(clip: dict, name: str, out_path: Path) -> dict:
+    """What a clip from video brings besides its animation: its frame rate, timed events (contacts,
+    impacts), a one-shot's phases, and its sound, copied to ``sounds/<clip>.wav`` beside the asset."""
+    import shutil
+
+    out = {}
+    for key in ("fps", "source", "events", "phases"):
+        if clip.get(key) is not None:
+            out[key] = clip[key]
+    sound = clip.get("sound")
+    if sound and Path(sound).exists():
+        target = out_path.parent / "sounds" / f"{name}.wav"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if Path(sound).resolve() != target.resolve():
+            shutil.copy2(sound, target)
+        out["sound"] = f"sounds/{name}.wav"
+    return out
 
 
 def _scale_to_height(doc, blob, height: float) -> float:

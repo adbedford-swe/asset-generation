@@ -90,7 +90,36 @@
             "type": "object",
             "description": "How seamlessly the loop closes (finalize's measurement).",
             "properties": {"position": {"type": "number"}, "roughness": {"type": "number"}}
-          }
+          },
+          "source": {
+            "enum": ["unimate", "video"],
+            "description": "unimate: sampled by UniMate from the prompt; video: fitted to a video generated from the character's own picture."
+          },
+          "events": {
+            "type": "array",
+            "description": "Moments in the clip, in seconds from its start.",
+            "items": {
+              "type": "object",
+              "required": ["time", "type"],
+              "properties": {
+                "time": {"type": "number"},
+                "type": {"enum": ["contact", "impact"], "description": "contact: part of the body comes to rest on the ground (a footstep); impact: a one-shot's action lands."},
+                "joint": {"type": "string", "description": "contact: the joint carrying the part on the ground."}
+              }
+            }
+          },
+          "phases": {
+            "type": "object",
+            "description": "A one-shot's timing in seconds: winding up, the action, recovering.",
+            "properties": {
+              "windup": {"$ref": "#/$defs/span"},
+              "active": {"$ref": "#/$defs/span"},
+              "recovery": {"$ref": "#/$defs/span"},
+              "impact": {"type": "number"},
+              "peak_speed": {"type": "number", "description": "Asset sizes per second."}
+            }
+          },
+          "sound": {"type": "string", "description": "The clip's sound (WAV), relative to this file."}
         }
       }
     },
@@ -117,6 +146,7 @@
     }
   },
   "$defs": {
-    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+    "vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+    "span": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
   }
 }

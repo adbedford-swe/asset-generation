@@ -30,8 +30,49 @@ namespace Assetgen
             public float speed;
             [Tooltip("Velocity the clip travels at, in Unity axes; the clip itself plays in place")]
             public Vector3 rootVelocity;
+            [Tooltip("unimate: sampled from the prompt; video: fitted to a video generated from the character's picture")]
+            public string source;
+            [Tooltip("Moments in the clip (clips made from video): footsteps and a one-shot's impact")]
+            public List<ClipEvent> events = new List<ClipEvent>();
+            [Tooltip("A one-shot's timing, in seconds (clips made from video)")]
+            public Phases phases;
+            [Tooltip("The clip's sound, relative to the .assetgen file (clips made from video)")]
+            public string sound;
 
             public bool IsLocomotion => role == "idle" || role == "walk" || role == "run" || role == "move";
+        }
+
+        [Serializable]
+        public struct ClipEvent
+        {
+            [Tooltip("Seconds from the clip's start")]
+            public float time;
+            [Tooltip("contact: part of the body comes to rest on the ground (a footstep); impact: the action lands")]
+            public string type;
+            [Tooltip("contact: the bone carrying the part on the ground")]
+            public string joint;
+        }
+
+        /// <summary>A one-shot's wind-up, action and recovery, as (start, end) seconds, and when it lands.</summary>
+        [Serializable]
+        public struct Phases
+        {
+            public Vector2 windup;
+            public Vector2 active;
+            public Vector2 recovery;
+            public float impact;
+
+            public bool IsSet => active.y > active.x;
+
+            /// <summary>"windup", "active" or "recovery" at <paramref name="time"/> seconds into the clip; "" without phases.</summary>
+            public string At(float time)
+            {
+                if (!IsSet)
+                    return "";
+                if (time <= windup.y)
+                    return "windup";
+                return time <= active.y ? "active" : "recovery";
+            }
         }
 
         [Serializable]
@@ -79,11 +120,15 @@ namespace Assetgen
                 var v = c.root_velocity != null && c.root_velocity.Length == 3
                     ? new Vector3(-c.root_velocity[0], c.root_velocity[1], c.root_velocity[2]) // glTF is right-handed
                     : Vector3.zero;
-                definition.clips.Add(new Clip
+                var clip = new Clip
                 {
                     name = c.name, prompt = c.prompt, role = c.role, loop = c.loop, duration = c.duration,
-                    speed = c.speed, rootVelocity = v
-                });
+                    speed = c.speed, rootVelocity = v, source = string.IsNullOrEmpty(c.source) ? "unimate" : c.source,
+                    sound = c.sound, phases = c.phases?.ToPhases() ?? default
+                };
+                foreach (var e in c.events ?? Array.Empty<EventData>())
+                    clip.events.Add(new ClipEvent { time = e.time, type = e.type, joint = e.joint });
+                definition.clips.Add(clip);
             }
             foreach (var b in file.locomotion?.blend ?? Array.Empty<BlendData>())
                 definition.locomotion.Add(new BlendPoint { clip = b.clip, speed = b.speed });
@@ -122,6 +167,27 @@ namespace Assetgen
             public float duration;
             public float speed;
             public float[] root_velocity;
+            public string source;
+            public EventData[] events;
+            public PhasesData phases;
+            public string sound;
+        }
+
+        [Serializable] class EventData { public float time; public string type; public string joint; }
+
+        [Serializable] class PhasesData
+        {
+            public float[] windup;
+            public float[] active;
+            public float[] recovery;
+            public float impact;
+
+            static Vector2 Span(float[] s) => s != null && s.Length == 2 ? new Vector2(s[0], s[1]) : Vector2.zero;
+
+            public Phases ToPhases() => new Phases
+            {
+                windup = Span(windup), active = Span(active), recovery = Span(recovery), impact = impact
+            };
         }
 #pragma warning restore 0649
     }

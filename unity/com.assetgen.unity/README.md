@@ -42,6 +42,15 @@ Clips play in place: the character file stores how fast each one travels, so you
 `AssetgenCharacter.MoveForward` moves the character, and the Animator never fights it. Above the fastest clip's
 speed, `AssetgenCharacter` speeds the animation up to keep the feet planted.
 
+Clips made from video (motion prompts tagged `[video]`) carry their timing, which the builder turns into
+animation events, and their sound, which plays from an AudioSource it adds to the prefab:
+
+```csharp
+fox.Footstep += bone => footstepAudio.Play();                  // part of the body came to rest on the ground
+fox.Impact += clip => hitBox.Check();                          // a one-shot's action lands
+var phase = fox.PhaseOf("pounces_on_something", 0.6f);         // "windup", "active" or "recovery"
+```
+
 ## What an imported prop or diorama is
 
 A prop's `.assetgen` file says it is static (format `assetgen.prop`). Drop `barrel.glb` and `barrel.assetgen` under
@@ -141,4 +150,5 @@ when `com.unity.pipeline` is present; without it, everything else works as usual
 ## Licence of generated motion
 
 assetgen animates with UniMate's released checkpoints, which are CC BY-NC 4.0: characters animated with them are for
-non-commercial use. The character file's `license` field says so, and so does its inspector.
+non-commercial use. Clips made from video are tracked with CoTracker3, also CC BY-NC 4.0. The character file's
+`license` field says so, and so does its inspector.

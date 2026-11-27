@@ -39,6 +39,15 @@ UNIMATE = {
     ],
 }
 
+# Point tracking for motion from video (assetgen.capture). Code and weights are CC BY-NC 4.0.
+COTRACKER = {
+    "url": "https://github.com/facebookresearch/co-tracker.git",
+    "commit": "82e02e8029753ad4ef13cf06be7f4fc5facdda4d",
+    "dir": THIRD_PARTY / "co-tracker",
+    "repo_id": "facebook/cotracker3",
+    "files": ["scaled_offline.pth"],
+}
+
 # Fetched ahead of time so a run never needs the network.
 TEXT_MODELS = ["google/flan-t5-base"]
 QWEN_CONFIG = "Qwen/Qwen3-0.6B"
@@ -54,6 +63,10 @@ def unimate_dir() -> Path:
 
 def unimate_exp_dir() -> Path:
     return UNIMATE["dir"] / "outputs" / UNIMATE["experiment"]
+
+
+def cotracker_dir() -> Path:
+    return COTRACKER["dir"]
 
 
 def _git(*args, cwd=None):
@@ -120,8 +133,24 @@ def require(log=print) -> None:
         setup(log=log)
 
 
-def setup(weights: bool = True, log=print) -> None:
+def require_capture(log=print) -> Path:
+    """CoTracker's checkout and weights, fetched on first use. Returns the checkpoint's path."""
+    from huggingface_hub import hf_hub_download
+
+    head = ""
+    if (COTRACKER["dir"] / ".git").exists():
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=COTRACKER["dir"], capture_output=True,
+                              text=True).stdout.strip()
+    if head != COTRACKER["commit"]:
+        checkout(COTRACKER, log)
+    return Path(hf_hub_download(COTRACKER["repo_id"], COTRACKER["files"][0],
+                                local_dir=COTRACKER["dir"] / "checkpoints"))
+
+
+def setup(weights: bool = True, capture: bool = False, log=print) -> None:
     checkout(SKINTOKENS, log)
     checkout(UNIMATE, log)
     if weights:
         download_weights(log)
+    if capture:
+        require_capture(log)

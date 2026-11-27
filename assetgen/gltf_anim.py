@@ -47,7 +47,10 @@ class AnimatedGLB:
         prim = doc.meshes[doc.nodes[mesh_node].mesh].primitives[0]
         a = prim.attributes
         self.positions = read_accessor(doc, blob, a.POSITION).astype(np.float64)
-        self.faces = read_accessor(doc, blob, prim.indices).reshape(-1, 3).astype(np.int64)
+        if prim.indices is None:  # non-indexed: every three vertices are a triangle
+            self.faces = np.arange(len(self.positions), dtype=np.int64).reshape(-1, 3)
+        else:
+            self.faces = read_accessor(doc, blob, prim.indices).reshape(-1, 3).astype(np.int64)
         self.uvs = read_accessor(doc, blob, a.TEXCOORD_0).astype(np.float32) if a.TEXCOORD_0 is not None else None
         self.joints = read_accessor(doc, blob, a.JOINTS_0).astype(np.int64)
         self.weights = read_accessor(doc, blob, a.WEIGHTS_0).astype(np.float64)

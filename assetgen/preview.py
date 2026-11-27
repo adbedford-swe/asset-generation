@@ -12,10 +12,12 @@ from .splats import Camera, Gaussians, make_camera, render
 
 def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_colors=None,
                 background=(1.0, 1.0, 1.0), shade: bool = True, chunk: int = 1 << 20, wrap: bool = False,
-                return_depth: bool = False):
+                return_depth: bool = False, return_faces: bool = False, light=None):
     """Z-buffered rasterization (on the GPU when there is one). Returns (rgb (H, W, 3), mask (H, W)) on CPU,
-    and the depth along the view (inf where nothing was drawn) with ``return_depth``. ``wrap`` repeats the
-    texture for UVs outside [0, 1], as a tiling ground's are."""
+    then the depth along the view (inf where nothing was drawn) with ``return_depth``, then each pixel's
+    face (-1 where nothing was drawn) and its barycentric coordinates (H, W, 3) with ``return_faces``.
+    ``wrap`` repeats the texture for UVs outside [0, 1], as a tiling ground's are. ``light`` (a world
+    direction towards the light) shades every surface, textured or not, by a directional light."""
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     V = torch.as_tensor(np.asarray(vertices), dtype=torch.float32, device=dev)
     Fc = torch.as_tensor(np.asarray(faces), dtype=torch.long, device=dev)
@@ -89,13 +91,21 @@ def render_mesh(vertices, faces, cam: Camera, uvs=None, texture=None, vertex_col
         col = (VC[f] * w[..., None]).sum(1)
     else:
         col = torch.full((len(hit), 3), 0.8, device=dev)
-    if shade and texture is None and vertex_colors is None:
+    if light is not None:
+        n = F.normalize(torch.linalg.cross(V[f[:, 1]] - V[f[:, 0]], V[f[:, 2]] - V[f[:, 0]]), dim=-1)
+        n = torch.where(((n @ R[2]) > 0)[:, None], -n, n)  # face the camera
+        to_light = F.normalize(torch.as_tensor(light, dtype=torch.float32, device=dev), dim=0)
+        col = col * (0.3 + 0.7 * (n @ to_light).clamp_min(0)[:, None])
+    elif shade and texture is None and vertex_colors is None:
         n = F.normalize(torch.linalg.cross(V[f[:, 1]] - V[f[:, 0]], V[f[:, 2]] - V[f[:, 0]]), dim=-1)
         col = col * (0.35 + 0.65 * (n @ R[2]).abs()[:, None])
     rgb[hit] = col
+    out = [rgb.view(H, W, 3).cpu(), mask.view(H, W).float().cpu()]
     if return_depth:
-        return rgb.view(H, W, 3).cpu(), mask.view(H, W).float().cpu(), zbuf.view(H, W).cpu()
-    return rgb.view(H, W, 3).cpu(), mask.view(H, W).float().cpu()
+        out.append(zbuf.view(H, W).cpu())
+    if return_faces:
+        out += [fbuf.view(H, W).cpu(), bbuf.view(H, W, 3).cpu()]
+    return tuple(out)
 
 
 def turntable_cameras(center, radius: float, n: int = 6, size: int = 384, elevation_deg: float = 10.0,
