@@ -13,7 +13,7 @@ import torch
 from assetgen import animate, character, export
 from assetgen.capture import bench, clip, motion, track
 from assetgen.capture import run as capture_run
-from assetgen.capture.camera import render_start, seed_points, start_camera
+from assetgen.capture.camera import project, render_start, seed_points, start_camera
 from assetgen.capture.fit import FitOptions, fit
 from assetgen.capture.rig import (RigModel, axis_angle_to_matrix, from_animation, matrix_to_axis_angle,
                                   matrix_to_quaternion, quaternion_to_matrix)
@@ -115,7 +115,7 @@ def _scene(glb, size=192):
     rig = RigModel(g)
     with torch.no_grad():
         rest = rig.pose_points(rig.vertex_basis(), *rig.zeros(1))[0].numpy()
-    cam = start_camera(rest, size, size, margin=1.4)
+    cam = start_camera(rest, size, size)
     rgb, mask, face, bary = render_start(rest, rig.faces, cam, g.uvs, g.texture)
     return g, rig, cam, seed_points(mask, face, bary, 400, inset=1)
 
@@ -344,3 +344,38 @@ def test_capture_from_a_video_file_end_to_end(creature_glb, tmp_path, monkeypatc
     again = animate.run_video(creature_glb, tmp_path / "video", ["An object marches on the spot. [video]"], spec,
                               **kwargs)
     assert first == again and len(calls) == 2
+
+
+def test_start_camera_frames_the_silhouette(creature_glb):
+    rig = RigModel(AnimatedGLB(creature_glb))
+    with torch.no_grad():
+        rest = rig.pose_points(rig.vertex_basis(), *rig.zeros(1))[0]
+    for yaw in (35.0, 90.0):
+        cam = start_camera(rest.numpy(), 320, 240, yaw_deg=yaw, fill=0.6)
+        xy, _ = project(rest, cam)
+        lo, hi = xy.min(0).values.numpy(), xy.max(0).values.numpy()
+        span = (hi - lo) / np.array([320, 240])
+        assert abs(span.max() - 0.6) < 0.02                         # fills 60% on its limiting side
+        assert np.allclose((lo + hi) / 2, [160, 120], atol=3)       # centred
+
+
+def test_texture_trust_is_low_in_flat_colour():
+    from assetgen.capture.camera import texture_trust
+
+    rgb = np.full((64, 64, 3), 0.5)
+    rgb[:32, :32] = np.random.default_rng(0).random((32, 32, 3))    # detail in one corner, flat elsewhere
+    pixels = np.array([[16.5, 16.5], [48.5, 48.5]], np.float32)
+    detail, flat = texture_trust(rgb, pixels, floor=0.05)
+    assert detail == 1.0 and flat == 0.05
+
+
+def test_cotracker_weights_already_on_disk_are_used(tmp_path, monkeypatch):
+    from assetgen import thirdparty
+
+    spec = dict(thirdparty.COTRACKER, dir=tmp_path / "co-tracker")
+    monkeypatch.setattr(thirdparty, "COTRACKER", spec)
+    monkeypatch.setattr(thirdparty, "checkout", lambda *a, **k: None)
+    weights = tmp_path / "co-tracker" / "checkpoints" / "scaled_offline.pth"
+    weights.parent.mkdir(parents=True)
+    weights.write_bytes(b"w")
+    assert thirdparty.require_capture(log=lambda *_: None) == weights

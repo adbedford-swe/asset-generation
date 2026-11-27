@@ -44,6 +44,7 @@ class VideoSpec:
     command: str | None = None
     width: int = 640
     height: int = 640
+    view_yaw: float = 35.0           # where the start frame's camera stands, degrees round from the front
     steps: int | None = None
     cfg_scale: float | None = None
     keep_loaded: bool = False
@@ -58,6 +59,7 @@ class VideoSpec:
                    url=os.environ.get("ASSETGEN_VIDEO_URL") or os.environ.get("ASSETGEN_IMAGE_URL"),
                    model=os.environ.get("ASSETGEN_VIDEO_MODEL"),
                    command=os.environ.get("ASSETGEN_VIDEO_COMMAND"),
+                   view_yaw=float(os.environ.get("ASSETGEN_VIDEO_VIEW_YAW", VideoSpec.view_yaw)),
                    keep_loaded=os.environ.get("ASSETGEN_VIDEO_KEEP_LOADED") == "1")
         return replace(spec, **{k: v for k, v in overrides.items() if v is not None})
 

@@ -164,8 +164,10 @@ uv run assetgen run --image fox.png --out outputs/fox --height 0.6 \
     --video-url http://127.0.0.1:1234
 ```
 
-1. **Start frame.** The rigged character is rendered at rest, from a three-quarter view a little above, with
-   room around it (`capture/start.png`). Every pixel of it is a known point on the mesh.
+1. **Start frame.** The rigged character is rendered at rest, from a three-quarter view a little above
+   (`capture/start.png`), framed so its silhouette spans 60% of the picture: the tracker and the video model
+   work with the pixels it covers, and room is left for it to move. Every pixel of it is a known point on the
+   mesh.
 2. **Video.** sd-server makes a video with MiniMax-H3's first/last-frame model (recipe `minimax-h3-fl2va`),
    starting and ending on that frame, at 24 fps: 4.5 s for a loop, 2.3 s for a one-shot. Ending on the start
    frame brings one-shots back to their stance, and lets loops be cut from the middle. assetgen loads and
@@ -173,7 +175,9 @@ uv run assetgen run --image fox.png --out outputs/fox --height 0.6 \
    any program makes it instead (sd-cli with the options your machine needs, for instance), and
    `assetgen capture start` writes the start frame for a video made by hand.
 3. **Tracks.** Points spread over the start frame are followed through the video with CoTracker3. Since each
-   began on a known point of the mesh, each track says where that point went.
+   began on a known point of the mesh, each track says where that point went. A point inside a patch of flat
+   colour can drift across it without the picture changing, so each is trusted by how much texture surrounds it
+   (Shi and Tomasi's corner measure).
 4. **Fit.** Joint rotations (and the hips' path) are fitted so those points land on their tracks. Nothing
    here knows about anatomy, so any rig works. One camera cannot see depth, so the fit also uses:
    - **the ground:** nothing sinks into it, and what rests on it does not slide. A foot on the ground has only
@@ -181,8 +185,11 @@ uv run assetgen run --image fox.png --out outputs/fox --height 0.6 \
      sliding, they win.
    - **travel:** resting points may move together by one shared velocity a frame. A camera that follows the
      character shows its planted feet sliding back, and that velocity is its ground speed.
-   - **depth:** Depth Anything V2 (Small, Apache-2.0) gives each frame's relative depth; the fit agrees with
-     it up to a scale and offset per frame. `--no-video-depth` turns it off.
+   - **lost tracks:** a skeleton moves rigidly, so after a first fit a point the tracker lost lands far from
+     its track; those observations are dropped and the clip fitted again.
+   - **depth, optionally:** `--video-depth` adds Depth Anything V2 Small's relative depth of each frame, up to
+     a scale and offset per frame. In both cases measured it made the fit worse (exact tracks on the Khronos
+     walk 1.5% to 2.5%; CoTracker on the generated fox walking across the frame 5.1% to 7.0%), so it is off.
 5. **Timing.** A loop is the stretch of the clip that best repeats itself, closed so its ends meet. A clip's
    **contacts** (part of the body coming to rest on the ground, by the bone that carries it) become footstep
    events. A one-shot's **phases** (wind-up, active, recovery) come from how fast its fastest parts move, and
@@ -206,19 +213,29 @@ AudioSource. Both have `phase_of`/`PhaseOf` for a one-shot's phase at a time, wh
 damage go.
 
 **How well it works.** `assetgen capture bench` plays a known animation from the rest pose (as a video
-would), tracks it exactly, fits it and compares the result with the truth in 3D, as a share of the asset's
-size. On the Khronos Fox:
+would), renders it lit at 512 px, tracks it, fits it and compares the result with the truth in 3D: the mean
+distance of every vertex from where it should be, as a share of the asset's size. "Standing still" is the
+same measure for not moving at all. Exact tracks isolate the fit; CoTracker3 on the rendered video is the
+whole method short of the video model.
 
-| Clip | Fit | Standing still | Ground speed (truth) |
-|---|---|---|---|
-| Walk | 1.5% | 4.9% | 107 /s (101) |
-| Survey (looking around) | 0.2% | 2.3% | |
-| Run | 5.3% | 8.7% | 106 /s (179) |
+| Clip | Exact tracks | CoTracker3 | Standing still | Ground speed: exact, CoTracker (truth) |
+|---|---|---|---|---|
+| Khronos Fox walk | 0.7% | 3.7% | 4.9% | 103, 57 /s (101) |
+| Khronos Fox survey (looking around) | 0.1% | 1.2% | 2.3% | |
+| Khronos Fox run | 2.6% | 5.4% | 8.7% | 130, 65 /s (179) |
+| assetgen's fox, UniMate's walk, camera following | | 1.2% | 2.2% | |
 
-Seen from the camera, the fit is within 0.05 to 0.8% everywhere; what remains is depth. A walk comes back well,
-speed included. A run, with both feet often off the ground, has less to pin its depth and comes back at about
-60% of its speed. These numbers use exact tracks; CoTracker's and the video model's own errors come on top, and
-neither has been measured yet.
+What the tracker costs depends on the texture. The Khronos Fox is painted in large flat colours, where tracked
+points drift; on the texture assetgen bakes for its own fox, the tracked fit is within 1.2 to 1.6%. Speed is
+where tracking costs most: it comes back at 36 to 56% of the truth, most likely because tracked feet drift a
+little and the fit reads that as sliding. A run, with both feet often off the ground, has the least to pin its
+depth. Not measured: the video model's own errors; MiniMax-H3 needs a bigger GPU than the 4 GB this was
+measured on.
+
+The motion stage's own path (`capture`, as a `[video]` prompt runs it) was run the same way, on the generated
+fox: its start frame, a 108-frame video of its UniMate walk made from it with a following camera and an ease
+back to the start frame, and CoTracker on all of it. It kept 91% of the tracked points, cut an 80-frame loop
+with four footsteps and wrote the clip; the fit is 1.6% from the truth, against 2.1% for standing still.
 
 ## Props and dioramas
 
@@ -626,11 +643,11 @@ Experimental:
 - End to end on Linux + ROCm (2x RX 7900 XTX) and on a 4 GB Windows laptop GPU (CUDA), apart from Idol on the laptop.
 - The server, API, web UI and exporters run on real pipeline output. The Unity package has run in Unity 6.3 driven
   by the Unity CLI (import, controller, prefab, Play mode, every `assetgen` command), and the Godot addon passes its
-  headless checks on Godot 4.7. See [HANDOFF.md](HANDOFF.md) for what has run where.
+  headless checks on Godot 4.7, including a character's events and sounds.
 - Quality follows the models: thin parts (fingers, weapons) can mesh coarsely, SkinTokens occasionally gives a
   creature an odd extra bone, and UniMate's motions range from convincing to charming.
-- Motion from video has run end to end on rendered video of known motion (benchmark above). It has not yet run
-  on a real MiniMax-H3 video or with CoTracker; see [HANDOFF.md](HANDOFF.md).
+- Motion from video runs end to end with CoTracker3 on rendered video of known motion (benchmark above). It
+  has not run on a MiniMax-H3 video, which needs more than this laptop's 4 GB GPU.
 
 ## Development
 
