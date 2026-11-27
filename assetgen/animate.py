@@ -1,4 +1,4 @@
-"""Stage 3: rigged mesh + text prompts -> animated clips with UniMate.
+"""Stage 3: rigged mesh + text prompts -> animated clips, with UniMate or from video.
 
 1. ``rig_preprocess`` turns the rig into a UniMate asset (joint labels, facing,
    canonical rest pose) without stopping for review. The facing pair is chosen
@@ -6,6 +6,11 @@
    mirror pair is the joint at -X.
 2. The sampler generates one motion per prompt (and repetition).
 3. Each motion drives the canonical mesh and is exported as a .glb.
+
+A prompt tagged ``[video]`` is made from video instead (:mod:`assetgen.capture`): a
+video model animates a picture of the character, and the rig is fitted to it. Its
+clip is written onto the same asset as UniMate's, so finalize merges them all. When
+every prompt is a video prompt, UniMate is not run at all.
 """
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 
@@ -118,12 +123,19 @@ def clip_name(prompt: str) -> str:
 
 
 ONCE = re.compile(r"\s*\[once\]\s*$", re.IGNORECASE)
+VIDEO = re.compile(r"\s*\[video\]", re.IGNORECASE)
 
 
 def split_prompt(prompt: str) -> tuple[str, bool]:
     """A prompt and whether its clip loops: every clip loops unless the prompt ends in ``[once]``."""
+    prompt = VIDEO.sub("", prompt)
     text = ONCE.sub("", prompt).strip()
     return text, text == prompt.strip()
+
+
+def from_video(prompt: str) -> bool:
+    """Whether a prompt is tagged ``[video]``: its clip is made from video, not by UniMate."""
+    return bool(VIDEO.search(prompt))
 
 
 def _file_key(path: Path, *extra) -> str:
@@ -194,8 +206,58 @@ def trim_loops(samples: Path, loop_prompts: set[str], log=print) -> dict[str, in
 def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", device: str = "cuda",
         repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
         llm: dict | None = None, loop: str = "auto", flow_steps: int | None = None, fbx: bool = False,
-        log=print) -> list[dict]:
+        video=None, subject: str | None = None, video_depth: bool = True, log=print) -> list[dict]:
+    """Clips for ``prompts``, in their order. ``video`` (a :class:`assetgen.capture.video.VideoSpec`) is how
+    ``[video]`` prompts get their videos."""
     rigged, out_dir = rigged.resolve(), out_dir.resolve()
+    videos = [p for p in prompts if from_video(p)]
+    prompts = [p for p in prompts if not from_video(p)]
+    clips = run_unimate(rigged, out_dir, prompts, name, device, repetitions, seed, cfg_scale, annotate, llm, loop,
+                        flow_steps, fbx, log) if prompts else []
+    if videos:
+        # Video clips go onto the asset UniMate's clips drive, so finalize can merge them by node name. Its
+        # summary records the path where it was made, which a continued run has copied, so look by file name.
+        asset = rigged
+        if clips:
+            made = Path(json.loads((out_dir / "asset" / "summary.json").read_text())["canonical_glb"])
+            asset = out_dir / "asset" / PureWindowsPath(made).name
+        clips += run_video(asset, out_dir / "video", videos, video, subject, seed, device, video_depth, log)
+    (out_dir / "clips.json").write_text(json.dumps(clips, indent=2))
+    return clips
+
+
+def run_video(asset: Path, out_dir: Path, prompts: list[str], spec=None, subject: str | None = None, seed: int = 0,
+              device: str = "cuda", depth: bool = True, log=print) -> list[dict]:
+    """A clip from video for each prompt; one already made the same way is reused."""
+    from dataclasses import asdict
+
+    from .capture.run import capture
+    from .capture.video import VideoSpec
+
+    spec = spec or VideoSpec.from_env()
+    clips = []
+    for k, prompt in enumerate(prompts):
+        text, _ = split_prompt(prompt)
+        folder = out_dir / clip_name(text)
+        settings = {k_: v for k_, v in asdict(spec).items() if k_ != "keep_loaded"}
+        key = _file_key(asset, prompt, subject, seed + k, depth, json.dumps(settings, sort_keys=True))
+        stamp = folder / ".assetgen_key"
+        record = folder / "capture.json"
+        if stamp.exists() and stamp.read_text() == key and record.exists():
+            entry = json.loads(record.read_text())["entry"]
+            if Path(entry["glb"]).exists():
+                log(f"[animate] {text!r} from video: up to date")
+                clips.append(entry)
+                continue
+        clips.append(capture(asset, prompt, folder, spec, subject, seed + k, device=device, depth=depth, log=log))
+        stamp.write_text(key)
+    return clips
+
+
+def run_unimate(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", device: str = "cuda",
+                repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
+                llm: dict | None = None, loop: str = "auto", flow_steps: int | None = None, fbx: bool = False,
+                log=print) -> list[dict]:
     if not (unimate_exp_dir() / "config.json").exists():
         raise SystemExit(f"UniMate is not set up at {unimate_dir()}: run `uv run assetgen setup`")
     env = _env(device)
@@ -245,7 +307,6 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
     missing = [c["glb"] for c in clips if not Path(c["glb"]).exists()]
     if missing:
         raise RuntimeError(f"no animated asset for {missing}")
-    (out_dir / "clips.json").write_text(json.dumps(clips, indent=2))
     return clips
 
 
@@ -259,7 +320,7 @@ def main(argv=None) -> None:
     ap.add_argument("--rigged", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--prompt", nargs="+", default=DEFAULT_PROMPTS,
-                    help='motions; each loops seamlessly unless it ends in "[once]"')
+                    help='motions; each loops seamlessly unless it ends in "[once]"; "[video]" makes it from video')
     ap.add_argument("--name", default="asset")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--repetitions", type=int, default=1)
@@ -271,10 +332,28 @@ def main(argv=None) -> None:
     ap.add_argument("--fbx", action="store_true", help="also export each clip as FBX")
     ap.add_argument("--llm_base_url", default=None, help="OpenAI-compatible endpoint for joint labels")
     ap.add_argument("--llm_model", default="local")
+    ap.add_argument("--subject", default=None, help="[video] prompts: what the character is")
+    ap.add_argument("--video_backend", default=None, choices=["sdcpp", "command"])
+    ap.add_argument("--video_url", default=None)
+    ap.add_argument("--video_model", default=None)
+    ap.add_argument("--video_command", default=None)
+    ap.add_argument("--video_steps", type=int, default=None)
+    ap.add_argument("--video_size", default=None, help="WIDTHxHEIGHT of the videos (default 640x640)")
+    ap.add_argument("--no_video_depth", action="store_true", help="fit [video] clips without estimated depth")
     a = ap.parse_args(argv)
     llm = {"base_url": a.llm_base_url, "model": a.llm_model} if a.llm_base_url else None
+    video = None
+    if any(from_video(p) for p in a.prompt):
+        from .capture.video import VideoSpec
+
+        width = height = None
+        if a.video_size:
+            width, height = (int(v) for v in a.video_size.lower().split("x"))
+        video = VideoSpec.from_env(backend=a.video_backend, url=a.video_url, model=a.video_model,
+                                   command=a.video_command, steps=a.video_steps, width=width, height=height)
     run(Path(a.rigged), Path(a.out), a.prompt, a.name, a.device, a.repetitions, a.seed, a.cfg_scale, llm=llm,
-        loop=a.loop, flow_steps=a.flow_steps, fbx=a.fbx)
+        loop=a.loop, flow_steps=a.flow_steps, fbx=a.fbx, video=video, subject=a.subject,
+        video_depth=not a.no_video_depth)
 
 
 if __name__ == "__main__":

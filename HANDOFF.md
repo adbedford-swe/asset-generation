@@ -155,6 +155,66 @@ Not checked:
   existing API use and type-checked with Roslyn without Unity's assemblies.
 - Ground textures from a capable image model.
 
+## Motion from video (0.7.0)
+
+`assetgen.capture`: a motion prompt tagged `[video]` gets its clip from a video of the character instead of
+UniMate (README, "Motion from video"). The start frame is a render of the rigged character at rest, so tracked
+points are known surface points; the rig is fitted to their tracks with a ground prior (no sinking, robust
+no-sliding, one shared travel velocity), smoothness, a pull towards rest, and optionally Depth Anything's
+relative depth. Loops are cut from the clip; contacts, a one-shot's phases and its impact (from the
+soundtrack's onsets when there is one) go into the character file; Godot and Unity turn them into signals /
+events and play the sound.
+
+Checked on the laptop (Windows, CPU torch for the tests):
+
+- `pytest` with `ASSETGEN_GODOT` set to Godot 4.7.2: 156 passed, including the Godot addon's checks on a real
+  Godot, and among them `test_events.gd`: footsteps fire while a captured loop plays, the impact fires from a
+  one-shot, and its sound loads and plays from the `Sound` player.
+- The fitter against known animations with exact tracks (`assetgen capture bench`), Khronos Fox, 512 px, 24 fps,
+  3 s from rest, 2500 iterations (the default); vertex error as a share of the asset's size, against not moving
+  at all: Walk 1.5% (4.9%), Survey 0.2% (2.3%), Run 5.3% (8.7%). Across the view 0.05 to 0.8%; the rest is
+  depth. Ground speed of the in-place walk: 107/s fitted against 101/s at which its planted paws slide; Run
+  106/s against 179/s. Each takes 2.5 to 3 minutes on the laptop's CPU.
+- At 800 iterations the same were 2.4%, 1.6% and 7.1%: on Survey the objective was lower at the truth than at
+  the fit, so the optimiser had stopped short, and more iterations closed most of the gap. The true depth in
+  place of Depth Anything's (at 800 iterations) took Run from 7.1% to 6.2% at weight 2 and 5.4% at weight 20.
+- What got it there, measured on the walk: tracks alone 5.75% (worse than standing still: legs swung in
+  depth); with the ground prior 3.53%; with smoothness recalibrated (it had cost 65 at the truth against 0.86
+  at the fit) 2.58%; with the slide penalty made robust 2.42%, and travel from 69/s to 102/s; with 2500
+  iterations 1.52%. The robust slide also took the synthetic creature in the tests from 8.2% to 2.1%: its feet
+  skate, and a plain penalty hid that in depth.
+- End to end through `capture.run.capture` from a video file, on the real fox run from 18 November (SkinTokens
+  rig, UniMate's canonical asset), with a UniMate walk rendered as the video: a 77-frame loop, 0.2 px track
+  residual, 2.8% vertex error (at 800 iterations), merged by finalize with a UniMate clip into one character
+  file. UniMate's walk slides its feet, so its ground speed cannot be read off contacts; the Khronos walk is the
+  speed test.
+- The sd-server video job (`/sdcpp/v1/vid_gen`, polling, unload) against a stub server that serves sd.cpp's
+  real `minimax-h3-fl2va` recipe: the first/last-frame weights, video VAE and audio VAE are chosen from a
+  catalog that also holds the reference weights.
+- The Unity changes (`CharacterDefinition`, `AssetgenCharacter`, `CharacterBuilder`) type-checked with the .NET
+  11 SDK against stub Unity types; not compiled or run in Unity (Unity is not on this laptop).
+
+Not run anywhere yet: CoTracker3 (its download was not run here), Depth Anything V2 on video frames, a real
+MiniMax-H3 video, and the `[video]` prompt through `assetgen run` on a GPU. On the ROCm box, MiniMax-H3's
+first/last-frame mode is the path that crashes in VAE encode on 7900 XTXs (stable-diffusion.cpp issues
+1897, 1985, 2169); `GGML_CUDA_NO_PINNED=1`, `GGML_CUDA_DISABLE_GRAPHS=1`, or the VAE on Vulkan are the
+workarounds reported there, and `--video-backend command` lets sd-cli run with whichever works.
+
+Next, in order of what they would buy:
+
+- A real run: `assetgen run ... --prompt "An object pounces. [once] [video]"` on the ROCm box, then
+  `capture bench --tracker cotracker --depth model` to measure CoTracker and Depth Anything on rendered video.
+- Runs and other airborne motion: the ground prior pins depth only while something touches the ground. UniMate
+  as a prior (start its sampler from the fitted motion partly noised, as in SDEdit) would give every frame a
+  plausible pose.
+- What is left is not the optimiser: at 2500 iterations the objective is lower at the fit than at the truth
+  (walk 0.035 against 0.083, run 0.135 against 0.380; `loss` and `loss_at_truth` in bench.json). The terms
+  themselves prefer the fit: depth one camera cannot see, and the Khronos clips' own paws sliding a little and
+  dipping below the rest pose's floor, which the ground prior corrects. Better evidence (depth, a motion prior)
+  is what would move these numbers.
+- Licences: CoTracker3 is CC BY-NC 4.0, so this does not lift UniMate's non-commercial limit. A tracker with
+  permissive weights would; none has been evaluated.
+
 ## First thing to do on the ROCm box
 
 ```bash

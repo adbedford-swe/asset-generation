@@ -107,3 +107,47 @@ def test_scenes_import_with_a_collider_per_placement(tmp_path):
     assert len(props) == 4
     report = run_check(project, "test_prop.gd", *props)
     assert sum("the root is an AssetgenProp" in r for r in report) == 4
+
+
+@pytest.mark.skipif(not GODOT, reason="set ASSETGEN_GODOT to a Godot 4 binary")
+def test_clips_from_video_fire_their_events_and_play_their_sounds(tmp_path):
+    import json
+
+    import numpy as np
+    import torch
+
+    from assetgen import character
+    from assetgen.capture import clip, motion
+    from assetgen.capture.rig import RigModel
+    from assetgen.capture.video import write_audio
+    from assetgen.finalize import ground, merge_clips
+    from assetgen.gltf_anim import AnimatedGLB
+    from tests.test_capture import creature, swing
+
+    glb = creature(tmp_path / "creature.glb")
+    rig = RigModel(AnimatedGLB(glb))
+    rot, tr = swing(rig, 49, period=24.0)
+    walk = clip.write(glb, rig, motion.Motion(rot, tr, torch.zeros(49, 2)), 24, tmp_path / "w" / "walk.glb", "walk")
+    rot, tr = swing(rig, 36, period=36.0)
+    wave = clip.write(glb, rig, motion.Motion(rot, tr, torch.zeros(36, 2)), 24, tmp_path / "v" / "wave.glb", "wave")
+    t = np.arange(16000) / 16000
+    sound = write_audio(tmp_path / "wave.wav", (np.sin(2 * np.pi * 440 * t) * np.exp(-6 * t)).astype(np.float32),
+                        rate=16000)
+    clips = [{"glb": str(walk), "prompt": "An object marches on the spot.", "loop": True, "loop_frames": 48,
+              "fps": 24, "source": "video",
+              "events": [{"time": 0.25, "type": "contact", "joint": "leg_l"},
+                         {"time": 1.25, "type": "contact", "joint": "leg_r"}]},
+             {"glb": str(wave), "prompt": "An object waves.", "loop": False, "fps": 24, "source": "video",
+              "phases": {"windup": [0.0, 0.3], "active": [0.3, 0.9], "recovery": [0.9, 1.46], "impact": 0.75},
+              "events": [{"time": 0.75, "type": "impact"}], "sound": str(sound)}]
+    out = tmp_path / "run" / "creature.glb"
+    info = merge_clips(clips, out, log=lambda *_: None)
+    info["ground_offset"] = ground(out, log=lambda *_: None)
+    character.write(out, info)
+    project = godot_project(tmp_path / "game")
+    folder = export.install(out, "godot", project, log=lambda *_: None)
+    assert json.loads((folder / "creature.assetgen").read_text())["clips"][1]["sound"] == "sounds/waves.wav"
+    report = run_check(project, "test_events.gd", f"res://{(folder / 'creature.glb').relative_to(project).as_posix()}")
+    for line in ("footstep while", "impact from waves", "the one-shot's sound is loaded as it starts",
+                 "has a Sound player"):
+        assert any(line in r for r in report), line

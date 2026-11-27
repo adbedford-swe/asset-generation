@@ -8,7 +8,10 @@ extends EditorScenePostImport
 ## - an AnimationTree: a state machine whose "Locomotion" state blends the idle, walk and run
 ##   clips by speed (metres per second), with a state for every clip; one-shots return to
 ##   Locomotion when they end;
-## - the AssetgenCharacter script on the root, holding the clips' metadata.
+## - the AssetgenCharacter script on the root, holding the clips' metadata;
+## - for clips made from video, their events (footsteps, impacts) as method keys that make the
+##   character emit clip_event, footstep and impact, and their sounds, played from the clip's start
+##   through a "Sound" AudioStreamPlayer3D.
 ##
 ## A prop or diorama ("assetgen.prop") gets a StaticBody3D with the collision shape its file asks
 ## for, and the AssetgenProp script on the root, holding its size and footprint.
@@ -55,12 +58,14 @@ func _post_import(scene: Node) -> Object:
 	if player == null:
 		push_error("assetgen: %s has no AnimationPlayer; was it imported with animation off?" % get_source_file())
 		return scene
-	build(scene, player, data)
+	build(scene, player, data, path.get_base_dir())
 	return scene
 
 
-static func build(root: Node, player: AnimationPlayer, data: Dictionary) -> void:
+## folder: where the .assetgen file is; clips' sounds are relative to it.
+static func build(root: Node, player: AnimationPlayer, data: Dictionary, folder: String = "") -> void:
 	var clips := {}
+	var sounds := false
 	for clip in data.get("clips", []):
 		var animation := _animation(player, clip["name"])
 		if animation == null:
@@ -70,8 +75,17 @@ static func build(root: Node, player: AnimationPlayer, data: Dictionary) -> void
 		clips[clip["name"]] = {
 			"role": clip.get("role", "loop"), "loop": clip.get("loop", false),
 			"duration": float(clip.get("duration", animation.length)), "speed": float(clip.get("speed", 0.0)),
-			"prompt": clip.get("prompt", ""),
+			"prompt": clip.get("prompt", ""), "source": clip.get("source", "unimate"),
+			"events": clip.get("events", []), "phases": clip.get("phases", {}),
+			"sound": folder.path_join(clip["sound"]) if clip.has("sound") and folder != "" else "",
 		}
+		_add_event_keys(player, animation, clip["name"], clips[clip["name"]])
+		sounds = sounds or clips[clip["name"]]["sound"] != ""
+	if sounds:
+		var sound := AudioStreamPlayer3D.new()
+		sound.name = "Sound"
+		root.add_child(sound)
+		sound.owner = root
 
 	var machine := AnimationNodeStateMachine.new()
 	var blend_points: Array = data.get("locomotion", {}).get("blend", []).filter(func(p): return clips.has(p["clip"]))
@@ -127,6 +141,21 @@ static func build(root: Node, player: AnimationPlayer, data: Dictionary) -> void
 	root.set("character_height", float(model.get("height", 0.0)))
 	root.set("prompt", str(source.get("prompt", "")))
 	root.set_meta("assetgen", data)
+
+
+## A method track on the character (the player's root node) with a key for every event, and one at the
+## start for the clip's sound.
+static func _add_event_keys(player: AnimationPlayer, animation: Animation, clip_name: String, clip: Dictionary) -> void:
+	if clip["events"].is_empty() and clip["sound"] == "":
+		return
+	var track := animation.add_track(Animation.TYPE_METHOD)
+	animation.track_set_path(track, NodePath("."))  # relative to the root node: the character
+	if clip["sound"] != "":
+		animation.track_insert_key(track, 0.0, {"method": &"_assetgen_sound", "args": [clip_name]})
+	for event in clip["events"]:
+		var at := clampf(float(event.get("time", 0.0)), 0.0, animation.length)
+		animation.track_insert_key(track, at, {"method": &"_assetgen_event",
+			"args": [clip_name, str(event.get("type", "")), str(event.get("joint", ""))]})
 
 
 static func _find_player(node: Node) -> AnimationPlayer:

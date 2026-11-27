@@ -105,14 +105,19 @@ def build(glb: Path, info: dict | None = None, source: dict | None = None) -> di
         velocity = [float(v) for v in extras.get("root_velocity", [0.0, 0.0, 0.0])]
         speed = float(np.hypot(velocity[0], velocity[2]))
         prompt = extras.get("prompt", anim.name or f"clip_{i}")
+        fps = float(extras.get("fps") or FPS)
         clip = {"name": anim.name or f"clip_{i}", "prompt": prompt, "role": clip_role(prompt, loop, speed, height),
-                "loop": loop, "duration": round(duration, 4), "frames": int(round(duration * FPS)) + 1, "fps": FPS}
+                "loop": loop, "duration": round(duration, 4), "frames": int(round(duration * fps)) + 1,
+                "fps": int(fps) if fps.is_integer() else fps, "source": extras.get("source", "unimate")}
         if loop:
             clip["root_motion"] = extras.get("root_motion", "in_place")
             clip["root_velocity"] = [round(v, 5) for v in velocity]
             clip["speed"] = round(speed, 5)
             if "seam" in extras:
                 clip["seam"] = {k: float(f"{v:.3g}") for k, v in extras["seam"].items()}
+        for key in ("events", "phases", "sound"):
+            if extras.get(key):
+                clip[key] = extras[key]
         clips.append(clip)
 
     character = {
@@ -135,10 +140,7 @@ def build(glb: Path, info: dict | None = None, source: dict | None = None) -> di
         "skeleton": _skeleton(g),
         "clips": clips,
         "locomotion": locomotion(clips),
-        "license": {
-            "motion": "CC-BY-NC-4.0",
-            "note": "Animated with UniMate's released checkpoints (CC BY-NC 4.0): non-commercial use only.",
-        },
+        "license": motion_license({c["source"] for c in clips}),
     }
     if source:
         character["source"] = {k: v for k, v in source.items() if v not in (None, "", [])}
@@ -146,6 +148,17 @@ def build(glb: Path, info: dict | None = None, source: dict | None = None) -> di
     if preview.exists():
         character["preview"] = preview.name
     return character
+
+
+def motion_license(sources: set[str]) -> dict:
+    made_with = []
+    if not sources or "unimate" in sources:
+        made_with.append("UniMate's released checkpoints")
+    if "video" in sources:
+        made_with.append("CoTracker3 (motion from video)")
+    return {"motion": "CC-BY-NC-4.0",
+            "note": f"Animated with {' and '.join(made_with)}, both CC BY-NC 4.0: non-commercial use only."
+            if len(made_with) > 1 else f"Animated with {made_with[0]} (CC BY-NC 4.0): non-commercial use only."}
 
 
 def locomotion(clips: list[dict]) -> dict:

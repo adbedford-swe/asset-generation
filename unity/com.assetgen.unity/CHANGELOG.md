@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- Clips made from video carry their timing. The builder adds animation events for their footsteps
+  and a one-shot's impact, and `AssetgenCharacter` raises them as `Footstep`, `Impact` and `ClipEvent`;
+  `PhaseOf(clip, time)` says whether a one-shot is winding up, active or recovering.
+- Their sounds (`sounds/` beside the `.assetgen` file) go on the prefab's `AssetgenCharacter` and play from
+  an AudioSource the builder adds, as each clip starts.
+- `CharacterDefinition.Clip` has the clip's `source`, `events`, `phases` and `sound`.
+
 ## 0.6.0
 
 - Scenes: `.assetgen` files of format `assetgen.scene` import as a `SceneDefinition` (ground, objects, placements),

@@ -13,6 +13,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#text-to-image-bring-your-own-generator">Text to image</a> ·
+  <a href="#motion-from-video">Motion from video</a> ·
   <a href="#props-and-dioramas">Props</a> ·
   <a href="#scenes">Scenes</a> ·
   <a href="#the-server">Server &amp; API</a> ·
@@ -59,6 +60,9 @@ the speeds the clips were generated at, and there's a prefab you can drag into a
 - **Any anatomy.** The rig isn't a humanoid template: horns, tails, four legs and an axe all get bones.
 - **Motion from text, one clip per line.** `An object roars. [once]`. Loops close to within a millionth of the
   character's size, at any length.
+- **Or motion from video.** Tag a prompt `[video]` and a video model (MiniMax-H3 through stable-diffusion.cpp)
+  animates a picture of the character, and its rig is fitted to that video. The clip comes with its footsteps,
+  the moment a one-shot lands, and the sound the video model made with it; see [Motion from video](#motion-from-video).
 - **One `.glb` with every clip**, Y-up, facing +Z, feet on the ground, at the height you asked for.
 - **A character file** (`.assetgen`) that tells engines what each clip is for, whether it loops and how fast it
   travels, so they can wire it up without guessing.
@@ -148,6 +152,73 @@ uv run assetgen image --kind prop --prompt "a mossy wooden barrel" --init barrel
 `sdcpp` and `a1111` use `/sdapi/v1/img2img`, `openai` uses `/v1/images/edits`, `comfyui` needs a workflow with
 `{{image}}` and `{{denoise}}` (`--comfy-edit-workflow`), and `command` needs a template with `{init}` and `{strength}`
 (`--image-edit-command`).
+
+## Motion from video
+
+UniMate knows a fixed vocabulary of motions, and outside it its clips get weak. Video models have seen far more
+motion. A prompt ending in `[video]` makes its clip from one:
+
+```bash
+uv run assetgen run --image fox.png --out outputs/fox --height 0.6 \
+    --prompt "An object stands idle and breathes." "An object pounces on something. [once] [video]" \
+    --video-url http://127.0.0.1:1234
+```
+
+1. **Start frame.** The rigged character is rendered at rest, from a three-quarter view a little above, with
+   room around it (`capture/start.png`). Every pixel of it is a known point on the mesh.
+2. **Video.** sd-server makes a video with MiniMax-H3's first/last-frame model (recipe `minimax-h3-fl2va`),
+   starting and ending on that frame, at 24 fps: 4.5 s for a loop, 2.3 s for a one-shot. Ending on the start
+   frame brings one-shots back to their stance, and lets loops be cut from the middle. assetgen loads and
+   unloads the model around it, as it does for pictures. With `--video-backend command --video-command "..."`
+   any program makes it instead (sd-cli with the options your machine needs, for instance), and
+   `assetgen capture start` writes the start frame for a video made by hand.
+3. **Tracks.** Points spread over the start frame are followed through the video with CoTracker3. Since each
+   began on a known point of the mesh, each track says where that point went.
+4. **Fit.** Joint rotations (and the hips' path) are fitted so those points land on their tracks. Nothing
+   here knows about anatomy, so any rig works. One camera cannot see depth, so the fit also uses:
+   - **the ground:** nothing sinks into it, and what rests on it does not slide. A foot on the ground has only
+     one place along its pixel's ray. The slide penalty is robust: where the tracks plainly show a foot
+     sliding, they win.
+   - **travel:** resting points may move together by one shared velocity a frame. A camera that follows the
+     character shows its planted feet sliding back, and that velocity is its ground speed.
+   - **depth:** Depth Anything V2 (Small, Apache-2.0) gives each frame's relative depth; the fit agrees with
+     it up to a scale and offset per frame. `--no-video-depth` turns it off.
+5. **Timing.** A loop is the stretch of the clip that best repeats itself, closed so its ends meet. A clip's
+   **contacts** (part of the body coming to rest on the ground, by the bone that carries it) become footstep
+   events. A one-shot's **phases** (wind-up, active, recovery) come from how fast its fastest parts move, and
+   its **impact** is the strongest sound onset inside the active phase, since H3 makes a soundtrack with the
+   picture. The sound goes with the clip.
+
+The clip is written onto the same asset as UniMate's clips, so finalize merges them all, and the character
+file says which clip came from where. Its events, phases and sound go into the character file, like this (the
+numbers are illustrative):
+
+```jsonc
+{"name": "pounces_on_something", "role": "action", "source": "video", "fps": 24, "duration": 2.29,
+ "phases": {"windup": [0, 0.54], "active": [0.54, 0.92], "recovery": [0.92, 2.29], "impact": 0.83},
+ "events": [{"time": 0.83, "type": "impact"}, {"time": 1.21, "type": "contact", "joint": "bone_7"}],
+ "sound": "sounds/pounces_on_something.wav"}
+```
+
+Godot emits them as `footstep(joint)`, `impact(clip)` and `clip_event(...)` signals and plays the sound from a
+`Sound` player; Unity raises `Footstep`, `Impact` and `ClipEvent` from animation events and plays it from an
+AudioSource. Both have `phase_of`/`PhaseOf` for a one-shot's phase at a time, which is where hit boxes and
+damage go.
+
+**How well it works.** `assetgen capture bench` plays a known animation from the rest pose (as a video
+would), tracks it exactly, fits it and compares the result with the truth in 3D, as a share of the asset's
+size. On the Khronos Fox:
+
+| Clip | Fit | Standing still | Ground speed (truth) |
+|---|---|---|---|
+| Walk | 1.5% | 4.9% | 107 /s (101) |
+| Survey (looking around) | 0.2% | 2.3% | |
+| Run | 5.3% | 8.7% | 106 /s (179) |
+
+Seen from the camera, the fit is within 0.05 to 0.8% everywhere; what remains is depth. A walk comes back well,
+speed included. A run, with both feet often off the ground, has less to pin its depth and comes back at about
+60% of its speed. These numbers use exact tracks; CoTracker's and the video model's own errors come on top, and
+neither has been measured yet.
 
 ## Props and dioramas
 
@@ -492,6 +563,14 @@ when a prompt is ignored), `--rig-class mixamo` (force a Mixamo-template skeleto
 `assetgen synth --mesh Fox.glb --out testdata/fox` turns any textured mesh into an Idol-like splat and input image,
 for checking the pipeline without Idol.
 
+```bash
+uv run assetgen capture start --asset outputs/fox/2_rig/rigged.glb --out clips/pounce   # the start frame only
+uv run assetgen capture clip --asset outputs/fox/2_rig/rigged.glb --prompt "An object pounces. [once]" \
+    --video clips/pounce/my_video.mp4 --out clips/pounce                                 # fit a video made from it
+uv run assetgen capture bench --glb Fox.glb --anim Walk --out bench/fox_walk              # score the fit on a known clip
+uv run assetgen setup --capture                                                           # fetch CoTracker ahead of time
+```
+
 ## How it works, and why
 
 **Orientation.** Idol writes its PLY Y-down (its z-up object turned +90 degrees about X) at whatever yaw the image
@@ -550,6 +629,8 @@ Experimental:
   headless checks on Godot 4.7. See [HANDOFF.md](HANDOFF.md) for what has run where.
 - Quality follows the models: thin parts (fingers, weapons) can mesh coarsely, SkinTokens occasionally gives a
   creature an odd extra bone, and UniMate's motions range from convincing to charming.
+- Motion from video has run end to end on rendered video of known motion (benchmark above). It has not yet run
+  on a real MiniMax-H3 video or with CoTracker; see [HANDOFF.md](HANDOFF.md).
 
 ## Development
 
@@ -568,7 +649,9 @@ real Godot, for a character, props and a scene.
 ## Licences
 
 Idol is Apache-2.0 and SkinTokens is MIT. UniMate's code is MIT, but its released checkpoints are CC BY-NC 4.0, so
-characters animated with them are for non-commercial use.
+characters animated with them are for non-commercial use. Motion from video tracks points with CoTracker3, whose
+code and weights are CC BY-NC 4.0 too; Depth Anything V2 Small is Apache-2.0. Check MiniMax-H3's own licence for
+what you make with it.
 
 The fox in `docs/` began as the Khronos glTF sample Fox (low-poly fox by PixelMannen, CC0): `assetgen synth` turned
 it into a splat and a picture, and its mesh, rig and clips above were generated from those.

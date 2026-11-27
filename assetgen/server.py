@@ -1113,11 +1113,21 @@ def main(argv=None) -> None:
     ap.add_argument("--image-command", default=None, help='command: e.g. "sd-cli -p {prompt} -o {out}"')
     ap.add_argument("--image-keep-loaded", action="store_true",
                     help="sdcpp: leave sd-server's model loaded after each picture (default: unload it)")
+    ap.add_argument("--video-backend", default=None, choices=["sdcpp", "command"],
+                    help="motions tagged [video]: sd-server (MiniMax-H3) or a command (or ASSETGEN_VIDEO_BACKEND)")
+    ap.add_argument("--video-url", default=None, help="their sd-server (default: the image backend's)")
+    ap.add_argument("--video-model", default=None, help="their sd-server recipe (default minimax-h3-fl2va)")
+    ap.add_argument("--video-command", default=None, help="their command template (see assetgen capture clip)")
     ap.add_argument("--llm-base-url", default=os.environ.get("ASSETGEN_LLM_URL"),
                     help="OpenAI-compatible endpoint that plans scenes from a description (or ASSETGEN_LLM_URL)")
     ap.add_argument("--llm-model", default=os.environ.get("ASSETGEN_LLM_MODEL", "local"))
     ap.add_argument("--log-file", default=None, help="write the server's output here instead of the console")
     a = ap.parse_args(argv)
+    # The motion stage runs in its own process and reads these, like the image backend's.
+    for key, value in (("ASSETGEN_VIDEO_BACKEND", a.video_backend), ("ASSETGEN_VIDEO_URL", a.video_url),
+                       ("ASSETGEN_VIDEO_MODEL", a.video_model), ("ASSETGEN_VIDEO_COMMAND", a.video_command)):
+        if value:
+            os.environ[key] = value
     if a.log_file:
         Path(a.log_file).parent.mkdir(parents=True, exist_ok=True)
         log_file = open(a.log_file, "a", encoding="utf-8", buffering=1)

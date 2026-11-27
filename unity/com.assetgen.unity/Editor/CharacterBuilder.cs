@@ -16,6 +16,11 @@ namespace Assetgen.Editor
     /// clip; and <c>name.prefab</c>, a variant of the model with that controller and an
     /// <see cref="AssetgenCharacter"/>. Building again updates both in place, so references to them
     /// survive a re-import; changes made by hand to the controller are replaced.
+    /// <para>
+    /// Clips made from video get animation events for their footsteps and impact, and one at their start
+    /// for their sound; the prefab then has an AudioSource and the sounds (<c>sounds/</c> beside the
+    /// .assetgen file) on its <see cref="AssetgenCharacter"/>.
+    /// </para>
     /// </summary>
     public static class CharacterBuilder
     {
@@ -63,7 +68,8 @@ namespace Assetgen.Editor
                 Debug.LogWarning($"{modelPath} has no animation clips; was it imported with animation turned off?");
 
             var controller = BuildController(definition, sources, ControllerPath(definitionPath));
-            var prefab = BuildPrefab(definition, model, controller, PrefabPath(definitionPath));
+            var prefab = BuildPrefab(definition, model, controller, Sounds(definitionPath, definition),
+                                     PrefabPath(definitionPath));
             AssetDatabase.SaveAssets();
             return prefab;
         }
@@ -102,6 +108,7 @@ namespace Assetgen.Editor
                 var settings = AnimationUtility.GetAnimationClipSettings(clip);
                 settings.loopTime = info.loop;
                 AnimationUtility.SetAnimationClipSettings(clip, settings);
+                AnimationUtility.SetAnimationEvents(clip, Events(info, clip.length));
                 AssetDatabase.AddObjectToAsset(clip, controller);
                 clips[info.name] = clip;
             }
@@ -145,6 +152,44 @@ namespace Assetgen.Editor
             return controller;
         }
 
+        /// <summary>The animation events for a clip's timing; <see cref="AssetgenCharacter"/> receives them.</summary>
+        public static AnimationEvent[] Events(CharacterDefinition.Clip info, float length)
+        {
+            var events = new List<AnimationEvent>();
+            if (!string.IsNullOrEmpty(info.sound))
+                events.Add(new AnimationEvent { time = 0f, functionName = "AssetgenSound", stringParameter = info.name });
+            foreach (var e in info.events)
+            {
+                var time = Mathf.Clamp(e.time, 0f, length);
+                if (e.type == "contact")
+                    events.Add(new AnimationEvent
+                    {
+                        time = time, functionName = "AssetgenContact", stringParameter = $"{info.name}|{e.joint}"
+                    });
+                else if (e.type == "impact")
+                    events.Add(new AnimationEvent { time = time, functionName = "AssetgenImpact", stringParameter = info.name });
+            }
+            return events.OrderBy(e => e.time).ToArray();
+        }
+
+        static List<AssetgenCharacter.ClipSound> Sounds(string definitionPath, CharacterDefinition definition)
+        {
+            var folder = Path.GetDirectoryName(definitionPath)?.Replace('\\', '/');
+            var sounds = new List<AssetgenCharacter.ClipSound>();
+            foreach (var info in definition.clips)
+            {
+                if (string.IsNullOrEmpty(info.sound))
+                    continue;
+                var path = string.IsNullOrEmpty(folder) ? info.sound : $"{folder}/{info.sound}";
+                var sound = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                if (sound == null)
+                    Debug.LogWarning($"{definition.name}: no sound at {path} for '{info.name}'");
+                else
+                    sounds.Add(new AssetgenCharacter.ClipSound { clip = info.name, sound = sound });
+            }
+            return sounds;
+        }
+
         static Motion IdleMotion(CharacterDefinition definition, Dictionary<string, AnimationClip> clips)
         {
             if (!string.IsNullOrEmpty(definition.idleClip) && clips.TryGetValue(definition.idleClip, out var idle))
@@ -156,7 +201,7 @@ namespace Assetgen.Editor
         }
 
         static GameObject BuildPrefab(CharacterDefinition definition, GameObject model, AnimatorController controller,
-                                      string path)
+                                      List<AssetgenCharacter.ClipSound> sounds, string path)
         {
             var exists = AssetDatabase.LoadAssetAtPath<GameObject>(path) != null;
             var root = exists ? PrefabUtility.LoadPrefabContents(path) : (GameObject)PrefabUtility.InstantiatePrefab(model);
@@ -169,6 +214,14 @@ namespace Assetgen.Editor
                 if (!root.TryGetComponent(out AssetgenCharacter character))
                     character = root.AddComponent<AssetgenCharacter>();
                 character.Definition = definition;
+                character.Sounds.Clear();
+                character.Sounds.AddRange(sounds);
+                if (sounds.Count > 0 && !root.TryGetComponent(out AudioSource audio))
+                {
+                    audio = root.AddComponent<AudioSource>();
+                    audio.playOnAwake = false;
+                    audio.spatialBlend = 1f;
+                }
                 var prefab = PrefabUtility.SaveAsPrefabAsset(root, path, out var saved);
                 if (!saved)
                     throw new InvalidOperationException($"could not save {path}");

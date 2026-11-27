@@ -69,6 +69,7 @@ class Options:
     fbx: bool = False
     kind: str = "character"
     collider: str = "auto"         # props: convex, box, mesh or none (auto: convex; mesh for dioramas)
+    video_args: list[str] = field(default_factory=list)  # animate's --video_* options, for [video] prompts
 
 
 def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
@@ -133,6 +134,10 @@ def stage_commands(o: Options) -> dict[str, tuple[list[str], list[Path]]]:
         anim.append("--fbx")
     if o.llm_base_url:
         anim += ["--llm_base_url", o.llm_base_url, "--llm_model", o.llm_model]
+    if any("[video]" in p.lower() for p in o.prompts):
+        anim += o.video_args
+        if o.text:
+            anim += ["--subject", o.text]
     cmds["animate"] = (anim, [out / "3_motion" / "clips.json"])
     fin = ["assetgen.finalize", "--clips", out / "3_motion" / "clips.json", "--out", out / f"{o.name}.glb"]
     if o.height is not None:
