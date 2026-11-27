@@ -92,7 +92,10 @@ def _add_run_options(ap: argparse.ArgumentParser) -> None:
                     help="[video] prompts: a command with {prompt} {init} {end} {out} {frames} {width} {height} {seed}")
     ap.add_argument("--video-size", default=None, help="[video] prompts: WIDTHxHEIGHT (default 640x640)")
     ap.add_argument("--video-steps", type=int, default=None)
-    ap.add_argument("--no-video-depth", action="store_true", help="[video] prompts: fit without estimated depth")
+    ap.add_argument("--video-view-yaw", type=float, default=None,
+                    help="[video] prompts: where the camera stands, degrees round from the character's front")
+    ap.add_argument("--video-depth", action="store_true",
+                    help="[video] prompts: also fit to Depth Anything's relative depth (made the benchmark worse)")
     ap.add_argument("--from", dest="start", choices=STAGES, default=None, help="first stage to run")
     ap.add_argument("--to", dest="stop", choices=STAGES, default=None, help="last stage to run")
     ap.add_argument("--force", action="store_true", help="rerun stages that are up to date")
@@ -122,11 +125,12 @@ def _options(a, out: Path, image: Path | None, ply: Path | None, reference: Path
     video_args = []
     for flag, value in (("--video_backend", a.video_backend), ("--video_url", a.video_url),
                         ("--video_model", a.video_model), ("--video_command", a.video_command),
-                        ("--video_size", a.video_size), ("--video_steps", a.video_steps)):
+                        ("--video_size", a.video_size), ("--video_steps", a.video_steps),
+                        ("--video_view_yaw", a.video_view_yaw)):
         if value is not None:
             video_args += [flag, str(value)]
-    if a.no_video_depth:
-        video_args.append("--no_video_depth")
+    if a.video_depth:
+        video_args.append("--video_depth")
     return Options(out=out, text=text, image_spec=image_spec(a) if text else None, image=image, ply=ply,
                    reference=reference, name=a.name or stem.replace(" ", "_"),
                    device=device, mode=a.mode, seed=a.seed, prompts=a.prompt, repetitions=a.repetitions,

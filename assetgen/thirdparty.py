@@ -143,8 +143,10 @@ def require_capture(log=print) -> Path:
                               text=True).stdout.strip()
     if head != COTRACKER["commit"]:
         checkout(COTRACKER, log)
-    return Path(hf_hub_download(COTRACKER["repo_id"], COTRACKER["files"][0],
-                                local_dir=COTRACKER["dir"] / "checkpoints"))
+    weights = COTRACKER["dir"] / "checkpoints" / COTRACKER["files"][0]
+    if weights.exists():
+        return weights
+    return Path(hf_hub_download(COTRACKER["repo_id"], COTRACKER["files"][0], local_dir=weights.parent))
 
 
 def setup(weights: bool = True, capture: bool = False, log=print) -> None:

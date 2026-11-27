@@ -130,7 +130,8 @@ def contact_sheet(rig: RigModel, fitted, truth, cam_side, frames: int = 6, size:
 
 def run(glb: Path, anim: str, out: Path, tracker: str = "exact", fps: float = 24.0, seconds: float = 3.0,
         size: int = 512, points: int = 1500, device: str = "cpu", opts: FitOptions | None = None,
-        yaw: float = 35.0, elevation: float = 10.0, depth: str = "none", log=print) -> dict:
+        yaw: float = 35.0, elevation: float = 10.0, depth: str = "none", fill: float = 0.6, follow: bool = False,
+        log=print) -> dict:
     """Play ``anim`` of ``glb`` from rest, track it, fit it, and score the fit; writes ``out/bench.json`` and a
     side-on comparison, ``out/compare_side.png``. ``depth``: none, model (Depth Anything on the rendered
     video) or truth (the exact relative depth, what a perfect depth estimate would give)."""
@@ -140,12 +141,12 @@ def run(glb: Path, anim: str, out: Path, tracker: str = "exact", fps: float = 24
     g = AnimatedGLB(glb)
     ai = g.animations.index(anim) if anim in g.animations else int(anim)
     rig = RigModel(g, device=device)
-    truth = played_from_rest(rig, g, ai, fps, seconds)
+    truth = played_from_rest(rig, g, ai, fps, seconds, follow=follow)
     with torch.no_grad():
         rest = rig.pose_points(rig.vertex_basis(), *rig.zeros(1))[0].cpu().numpy()
-    cam = start_camera(rest, size, size, yaw_deg=yaw, elevation_deg=elevation)
+    cam = start_camera(rest, size, size, yaw_deg=yaw, elevation_deg=elevation, fill=fill)
     rgb, mask, face, bary = render_start(rest, rig.faces, cam, g.uvs, g.texture)
-    seeds = seed_points(mask, face, bary, points)
+    seeds = seed_points(mask, face, bary, points, rgb=rgb)
     write_start(out, rgb, cam, seeds, mask)
 
     t0 = time.time()
@@ -181,11 +182,12 @@ def run(glb: Path, anim: str, out: Path, tracker: str = "exact", fps: float = 24
     with torch.no_grad():
         still = torch.zeros(len(tracks), 2, dtype=truth[1].dtype)
         at_truth = {k: float(v) for k, v in objective.terms(*truth, still, np.arange(len(tracks))).items()}
-    side = start_camera(rest, size // 2, size // 2, yaw_deg=yaw + 90.0, elevation_deg=5.0)
+    side = start_camera(rest, size // 2, size // 2, yaw_deg=yaw + 90.0, elevation_deg=5.0, fill=0.75)
     Image.fromarray(contact_sheet(rig, fitted, truth, side)).save(out / "compare_side.png")
     speed = {"fitted": float(result.travel[len(result.travel) // 4:].mean(0).norm() * fps),
              "planted": contact_speed(rig, *truth, fps), "hub": travel_speed(rig, g, ai)}
-    report = {"glb": str(glb), "anim": g.animations[ai], "tracker": tracker, "depth": depth,
+    report = {"glb": str(glb), "anim": g.animations[ai], "tracker": tracker, "depth": depth, "fill": fill,
+              "follow": follow,
               "frames": len(tracks), "joints": rig.n_joints, "hub": rig.names[rig.hub],
               "visible_share": float(np.mean(visible)), "speed": speed,
               "seconds": {"track": round(t_track, 1), "fit": round(t_fit, 1)}, **result.report,
@@ -217,13 +219,17 @@ def main(argv=None) -> None:
     ap.add_argument("--depth-weight", type=float, default=FitOptions.depth)
     ap.add_argument("--yaw", type=float, default=35.0)
     ap.add_argument("--elevation", type=float, default=10.0)
+    ap.add_argument("--fill", type=float, default=0.6, help="share of the frame the character spans")
+    ap.add_argument("--follow", action="store_true",
+                    help="the camera follows the character, as a video that returns to its start frame tends to")
     ap.add_argument("--economy", type=float, default=FitOptions.economy)
     ap.add_argument("--ground", type=float, default=FitOptions.ground)
     ap.add_argument("--slide", type=float, default=FitOptions.slide)
     a = ap.parse_args(argv)
     run(Path(a.glb), a.anim, Path(a.out), a.tracker, seconds=a.seconds, size=a.size, points=a.points,
         device=a.device, opts=FitOptions(iterations=a.iterations, economy=a.economy, ground=a.ground, slide=a.slide,
-                                         depth=a.depth_weight), yaw=a.yaw, elevation=a.elevation, depth=a.depth)
+                                         depth=a.depth_weight), yaw=a.yaw, elevation=a.elevation, depth=a.depth,
+        fill=a.fill, follow=a.follow)
 
 
 if __name__ == "__main__":

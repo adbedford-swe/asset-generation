@@ -43,6 +43,8 @@ class FitOptions:
     anchor_end: bool = False
     stages: int = 3              # coarse to fine in time: fit every 4th, 2nd, then every frame
     refine: int = 300            # L-BFGS iterations after the last stage (0: none)
+    reject: float = 4.0          # drop observations off the fit by over this many times the median miss (0: never)
+    reject_px: float = 3.0       # ... and by over this many pixels
     ground_points: int = 1500
 
 
@@ -95,7 +97,8 @@ class Objective:
         self.basis = rig.point_basis(seeds.faces, seeds.bary)
         self.ground_basis = rig.vertex_basis(ground_vertices(rig, opts.ground_points))
         self.target = torch.as_tensor(tracks, dtype=dt, device=dev)
-        self.weight = torch.as_tensor(visible, dtype=dt, device=dev)
+        self.trust = torch.as_tensor(seeds.weights(), dtype=dt, device=dev)
+        self.weight = torch.as_tensor(visible, dtype=dt, device=dev) * self.trust[None]
         self.observed = torch.as_tensor(depth, dtype=dt, device=dev) if depth is not None else None
         self.scale = rig.size
         with torch.no_grad():
@@ -136,62 +139,93 @@ class Objective:
         return out
 
 
+def _solve(objective: "Objective", rotation, translation, travel, frames: np.ndarray, opts: FitOptions,
+           steps: int, refine: int):
+    """Adam for ``steps``, then L-BFGS for ``refine`` iterations, on ``frames``; returns the solution
+    interpolated to every frame."""
+    T = objective.T
+    dev, dt = rotation.device, rotation.dtype
+    rot = rotation[frames].clone().requires_grad_(True)
+    tr = translation[frames].clone().requires_grad_(True)
+    trav = travel[frames].clone().requires_grad_(True)
+    free = torch.ones(len(frames), 1, dtype=dt, device=dev)
+    if opts.anchor_start:
+        free[0] = 0
+    if opts.anchor_end:
+        free[-1] = 0
+
+    def loss():
+        return sum(objective.terms(rot * free[..., None], tr * free, trav, frames).values())
+
+    optim = torch.optim.Adam([rot, tr, trav], lr=opts.lr)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, max(1, steps), eta_min=opts.lr * 0.05)
+    for _ in range(steps):
+        optim.zero_grad()
+        loss().backward()
+        optim.step()
+        sched.step()
+    if refine:
+        lbfgs = torch.optim.LBFGS([rot, tr, trav], lr=1.0, max_iter=refine, history_size=50,
+                                  line_search_fn="strong_wolfe", tolerance_change=1e-12, tolerance_grad=1e-10)
+
+        def closure():
+            lbfgs.zero_grad()
+            value = loss()
+            value.backward()
+            return value
+
+        lbfgs.step(closure)
+    with torch.no_grad():
+        return (_interpolate((rot * free[..., None]).detach(), frames, T),
+                _interpolate((tr * free).detach(), frames, T), _interpolate(trav.detach(), frames, T))
+
+
 def fit(rig, seeds: Seeds, tracks: np.ndarray, visible: np.ndarray, cam, opts: FitOptions | None = None,
         depth: np.ndarray | None = None, log=print) -> Fit:
-    """``depth``: optional relative inverse depth (T, N) at the tracks (:mod:`assetgen.capture.depth`)."""
+    """``depth``: optional relative inverse depth (T, N) at the tracks (:mod:`assetgen.capture.depth`).
+
+    Fitted coarse to fine in time. Then, with ``opts.reject``, the tracks are checked against the fit: a
+    skeleton moves rigidly, so a point a tracker lost (it slid onto the background, or onto another limb)
+    lands far from its track. Those observations, and tracks that are mostly that, are dropped and the clip
+    is fitted again from where it got to."""
     opts = opts or FitOptions()
     objective = Objective(rig, seeds, tracks, visible, cam, opts, depth)
     T = objective.T
-    dev, dt = rig.device, rig.dtype
     rotation, translation = rig.zeros(T)
-    travel = torch.zeros(T, 2, dtype=dt, device=dev)
-
+    travel = torch.zeros(T, 2, dtype=rig.dtype, device=rig.device)
     levels = [2 ** k for k in reversed(range(max(1, opts.stages)))]
     for li, stride in enumerate(levels):
         frames = np.unique(np.r_[np.arange(0, T, stride), T - 1])
-        n = len(frames)
-        rot = rotation[frames].clone().requires_grad_(True)
-        tr = translation[frames].clone().requires_grad_(True)
-        trav = travel[frames].clone().requires_grad_(True)
-        free = torch.ones(n, 1, dtype=dt, device=dev)
-        if opts.anchor_start:
-            free[0] = 0
-        if opts.anchor_end:
-            free[-1] = 0
-        optim = torch.optim.Adam([rot, tr, trav], lr=opts.lr)
-        steps = opts.iterations if li == len(levels) - 1 else opts.iterations // 2
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, steps, eta_min=opts.lr * 0.05)
-        for _ in range(steps):
-            optim.zero_grad()
-            loss = sum(objective.terms(rot * free[..., None], tr * free, trav, frames).values())
-            loss.backward()
-            optim.step()
-            sched.step()
-        if opts.refine and li == len(levels) - 1:
-            lbfgs = torch.optim.LBFGS([rot, tr, trav], lr=1.0, max_iter=opts.refine, history_size=50,
-                                      line_search_fn="strong_wolfe", tolerance_change=1e-12, tolerance_grad=1e-10)
+        last = li == len(levels) - 1
+        rotation, translation, travel = _solve(objective, rotation, translation, travel, frames, opts,
+                                               opts.iterations if last else opts.iterations // 2,
+                                               opts.refine if last else 0)
 
-            def closure():
-                lbfgs.zero_grad()
-                loss = sum(objective.terms(rot * free[..., None], tr * free, trav, frames).values())
-                loss.backward()
-                return loss
-
-            lbfgs.step(closure)
+    vis = np.asarray(visible, dtype=bool)
+    kept = vis.copy()
+    if opts.reject > 0 and vis.any():
         with torch.no_grad():
-            r, t = rot * free[..., None], tr * free
-            rotation = _interpolate(r.detach(), frames, T)
-            translation = _interpolate(t.detach(), frames, T)
-            travel = _interpolate(trav.detach(), frames, T)
+            xy, _ = project(rig.pose_points(objective.basis, rotation, translation), cam)
+            d = (xy - objective.target).norm(dim=-1).cpu().numpy()
+        limit = max(opts.reject_px, opts.reject * float(np.median(d[vis])))
+        kept = vis & (d < limit)
+        lost = np.array([np.median(d[:, n][vis[:, n]]) > limit if vis[:, n].any() else True for n in range(d.shape[1])])
+        kept[:, lost] = False
+        if kept.sum() < vis.sum():
+            log(f"[capture] dropped {1 - kept.sum() / vis.sum():.1%} of the tracked points as lost "
+                f"(off the fit by over {limit:.1f} px; {int(lost.sum())} whole tracks)")
+            objective.weight = torch.as_tensor(kept, dtype=rig.dtype, device=rig.device) * objective.trust[None]
+            rotation, translation, travel = _solve(objective, rotation, translation, travel, np.arange(T), opts,
+                                                   opts.iterations // 2, opts.refine)
 
     with torch.no_grad():
         xy, _ = project(rig.pose_points(objective.basis, rotation, translation), cam)
         d = (xy - objective.target).norm(dim=-1).cpu().numpy()
         final = {k: float(v) for k, v in objective.terms(rotation, translation, travel, np.arange(T)).items()}
-    vis = np.asarray(visible, dtype=bool)
-    residual = np.array([d[t][vis[t]].mean() if vis[t].any() else np.nan for t in range(T)])
+    residual = np.array([d[t][kept[t]].mean() if kept[t].any() else np.nan for t in range(T)])
     report = {"frames": T, "points": int(len(seeds.pixels)), "loss": final,
+              "kept_share": float(kept.sum() / max(1, vis.sum())),
               "residual_px": {"mean": float(np.nanmean(residual)), "max": float(np.nanmax(residual)),
-                              "p90_points": float(np.percentile(d[vis], 90)) if vis.any() else None}}
-    log(f"[capture] fitted {T} frames: tracks missed by {report['residual_px']['mean']:.2f} px on average")
+                              "p90_points": float(np.percentile(d[kept], 90)) if kept.any() else None}}
+    log(f"[capture] fitted {T} frames: kept tracks missed by {report['residual_px']['mean']:.2f} px on average")
     return Fit(rotation, translation, travel, residual, report)

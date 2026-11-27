@@ -206,7 +206,7 @@ def trim_loops(samples: Path, loop_prompts: set[str], log=print) -> dict[str, in
 def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", device: str = "cuda",
         repetitions: int = 1, seed: int = 0, cfg_scale: float | None = None, annotate: str = "rule",
         llm: dict | None = None, loop: str = "auto", flow_steps: int | None = None, fbx: bool = False,
-        video=None, subject: str | None = None, video_depth: bool = True, log=print) -> list[dict]:
+        video=None, subject: str | None = None, video_depth: bool = False, log=print) -> list[dict]:
     """Clips for ``prompts``, in their order. ``video`` (a :class:`assetgen.capture.video.VideoSpec`) is how
     ``[video]`` prompts get their videos."""
     rigged, out_dir = rigged.resolve(), out_dir.resolve()
@@ -227,7 +227,7 @@ def run(rigged: Path, out_dir: Path, prompts: list[str], name: str = "asset", de
 
 
 def run_video(asset: Path, out_dir: Path, prompts: list[str], spec=None, subject: str | None = None, seed: int = 0,
-              device: str = "cuda", depth: bool = True, log=print) -> list[dict]:
+              device: str = "cuda", depth: bool = False, log=print) -> list[dict]:
     """A clip from video for each prompt; one already made the same way is reused."""
     from dataclasses import asdict
 
@@ -339,7 +339,9 @@ def main(argv=None) -> None:
     ap.add_argument("--video_command", default=None)
     ap.add_argument("--video_steps", type=int, default=None)
     ap.add_argument("--video_size", default=None, help="WIDTHxHEIGHT of the videos (default 640x640)")
-    ap.add_argument("--no_video_depth", action="store_true", help="fit [video] clips without estimated depth")
+    ap.add_argument("--video_view_yaw", type=float, default=None,
+                    help="where the videos' camera stands, degrees round from the character's front")
+    ap.add_argument("--video_depth", action="store_true", help="fit [video] clips to estimated depth too")
     a = ap.parse_args(argv)
     llm = {"base_url": a.llm_base_url, "model": a.llm_model} if a.llm_base_url else None
     video = None
@@ -350,10 +352,11 @@ def main(argv=None) -> None:
         if a.video_size:
             width, height = (int(v) for v in a.video_size.lower().split("x"))
         video = VideoSpec.from_env(backend=a.video_backend, url=a.video_url, model=a.video_model,
-                                   command=a.video_command, steps=a.video_steps, width=width, height=height)
+                                   command=a.video_command, steps=a.video_steps, width=width, height=height,
+                                   view_yaw=a.video_view_yaw)
     run(Path(a.rigged), Path(a.out), a.prompt, a.name, a.device, a.repetitions, a.seed, a.cfg_scale, llm=llm,
         loop=a.loop, flow_steps=a.flow_steps, fbx=a.fbx, video=video, subject=a.subject,
-        video_depth=not a.no_video_depth)
+        video_depth=a.video_depth)
 
 
 if __name__ == "__main__":

@@ -37,15 +37,15 @@ def prepare(asset: Path, folder: Path, spec: VideoSpec, points: int = 1500, devi
     rig = RigModel(g, device=device)
     with torch.no_grad():
         rest = rig.pose_points(rig.vertex_basis(), *rig.zeros(1))[0].cpu().numpy()
-    cam = start_camera(rest, spec.width, spec.height)
+    cam = start_camera(rest, spec.width, spec.height, yaw_deg=spec.view_yaw)
     rgb, mask, face, bary = render_start(rest, rig.faces, cam, g.uvs, g.texture)
-    seeds = seed_points(mask, face, bary, points)
+    seeds = seed_points(mask, face, bary, points, rgb=rgb)
     write_start(folder, rgb, cam, seeds, mask)
     return g, rig, cam, seeds
 
 
 def capture(asset: Path, prompt: str, folder: Path, spec: VideoSpec, subject: str | None = None, seed: int = 0,
-            video: Path | None = None, device: str = "cuda", depth: bool = True, opts: FitOptions | None = None,
+            video: Path | None = None, device: str = "cuda", depth: bool = False, opts: FitOptions | None = None,
             log=print) -> dict:
     """Make (or take) a video for ``prompt`` and fit it onto ``asset``'s rig. Returns the clip's entry for
     clips.json: ``glb``, ``prompt``, ``loop``, ``loop_frames``, ``fps``, ``source``, ``events``,
@@ -125,6 +125,8 @@ def main(argv=None) -> None:
     s.add_argument("--asset", required=True, help="the rigged asset (2_rig/rigged.glb, or 3_motion/asset/<name>.glb)")
     s.add_argument("--out", required=True)
     s.add_argument("--size", default="640x640")
+    s.add_argument("--view_yaw", type=float, default=VideoSpec.view_yaw,
+                   help="where the camera stands, degrees round from the character's front (90: side on)")
     c = sub.add_parser("clip", help="generate (or take) a video and fit it onto the rig")
     c.add_argument("--asset", required=True)
     c.add_argument("--prompt", required=True, help='"An object jumps in place. [once]"; loops unless [once]')
@@ -137,21 +139,25 @@ def main(argv=None) -> None:
     c.add_argument("--video_command", default=None)
     c.add_argument("--video_steps", type=int, default=None)
     c.add_argument("--size", default="640x640")
+    c.add_argument("--view_yaw", type=float, default=None,
+                   help=f"where the camera stands, degrees round from the front (default {VideoSpec.view_yaw:g})")
     c.add_argument("--seed", type=int, default=0)
     c.add_argument("--device", default="cuda")
-    c.add_argument("--no_depth", action="store_true", help="fit without the frames' estimated depth")
+    c.add_argument("--depth", action="store_true",
+                   help="also fit to Depth Anything's relative depth of the frames (made the benchmark worse)")
     a = ap.parse_args(argv)
     w, h = (int(v) for v in a.size.lower().split("x"))
     if a.cmd == "start":
-        spec = VideoSpec(width=w, height=h)
+        spec = VideoSpec(width=w, height=h, view_yaw=a.view_yaw)
         _, _, cam, seeds = prepare(Path(a.asset), Path(a.out), spec)
         print(f"[capture] start frame {Path(a.out) / 'start.png'} ({cam.width}x{cam.height}); make a video that "
               f"starts and ends on it, at {FPS} fps, then: assetgen capture clip --video <file> ...")
         return
     spec = VideoSpec.from_env(backend=a.video_backend, url=a.video_url, model=a.video_model,
-                              command=a.video_command, steps=a.video_steps, width=w, height=h)
+                              command=a.video_command, steps=a.video_steps, width=w, height=h,
+                              view_yaw=a.view_yaw)
     entry = capture(Path(a.asset), a.prompt, Path(a.out), spec, a.subject, a.seed,
-                    Path(a.video) if a.video else None, a.device, depth=not a.no_depth)
+                    Path(a.video) if a.video else None, a.device, depth=a.depth)
     print(json.dumps(entry, indent=2))
 
 
